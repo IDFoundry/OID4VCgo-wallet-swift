@@ -3,7 +3,9 @@ import Mobile
 
 /// An error from OID4VCgo: a stable `code`, the issuer's, Authorization
 /// Server's or Verifier's own error code when it gave one
-/// (`protocolError`), and a message for logs. `localizedDescription` is
+/// (`protocolError`), and a message for logs: it never carries personal
+/// data, a remote party's own description, a URL's path or query, or
+/// control characters. `localizedDescription` is
 /// a sentence fit to show the holder; `isRetryable` says whether trying
 /// the same step again may succeed.
 public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedError {
@@ -14,12 +16,16 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
         public static let invalidInput = Code(rawValue: MobileCodeInvalidInput)
         public static let platform = Code(rawValue: MobileCodePlatform)
         public static let network = Code(rawValue: MobileCodeNetwork)
+        public static let unavailable = Code(rawValue: MobileCodeUnavailable)
         public static let cancelled = Code(rawValue: MobileCodeCancelled)
         public static let notFound = Code(rawValue: MobileCodeNotFound)
         public static let wrongStep = Code(rawValue: MobileCodeWrongStep)
         public static let authorizationDenied = Code(rawValue: MobileCodeAuthorizationDenied)
         public static let credentialDenied = Code(rawValue: MobileCodeCredentialDenied)
         public static let noMatchingCredential = Code(rawValue: MobileCodeNoMatchingCredential)
+        /// Sending a presentation failed in a way that leaves it unknown
+        /// whether the Verifier received it: it's not sent again.
+        public static let deliveryUnknown = Code(rawValue: MobileCodeDeliveryUnknown)
         public static let protocolError = Code(rawValue: MobileCodeProtocol)
         public static let internalError = Code(rawValue: MobileCodeInternal)
     }
@@ -35,12 +41,14 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
     }
 
     /// Whether the same step may succeed if tried again: the network
-    /// failed, or the issuer refused the PIN (`invalid_grant`, up to its
-    /// limit), or asked to be tried later.
+    /// failed or timed out, the service was unavailable, the issuer
+    /// refused the PIN (`invalid_grant`, up to its limit) or a stale
+    /// nonce (`invalid_nonce`: a retry fetches a fresh one), or asked to
+    /// be tried later.
     public var isRetryable: Bool {
         switch code {
-        case .network: true
-        case .protocolError: ["invalid_grant", "temporarily_unavailable", "slow_down"].contains(protocolError ?? "")
+        case .network, .unavailable: true
+        case .protocolError: ["invalid_grant", "invalid_nonce", "temporarily_unavailable", "slow_down"].contains(protocolError ?? "")
         default: false
         }
     }
@@ -48,10 +56,12 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
     public var errorDescription: String? {
         switch code {
         case .network: "The service couldn't be reached. Check your connection and try again."
+        case .unavailable: "The service is unavailable just now. Try again later."
         case .cancelled: "Cancelled."
         case .authorizationDenied: "The issuer didn't authorize the request."
         case .credentialDenied: "The issuer declined to issue the credential."
         case .noMatchingCredential: "You have no credential that answers this request."
+        case .deliveryUnknown: "Your response may not have reached the verifier. Check with them before sharing again."
         case .protocolError where protocolError == "invalid_grant": "That code or PIN wasn't accepted."
         case .protocolError: "The service refused the request."
         case .platform: "The wallet couldn't use its keys or storage."

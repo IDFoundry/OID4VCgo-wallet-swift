@@ -12,18 +12,30 @@ public struct WalletConfiguration: Codable, Sendable {
     public var verifierRoots: String
     /// Allows services on loopback addresses.
     public var development: Bool
+    /// The holder's preferred languages (BCP 47, most preferred first),
+    /// for issuers' display metadata. `Locale.preferredLanguages` is the
+    /// usual choice.
+    public var locales: [String]
+    /// How many copies of each credential to request when an issuer
+    /// offers batches, each bound to its own key, so each presentation
+    /// can use one no Verifier has seen. 0 means the SDK's default (5);
+    /// it's capped at the issuer's batch size.
+    public var batchSize: Int
 
-    public init(clientID: String, redirectURI: String, issuerRoots: String = "", verifierRoots: String = "", development: Bool = false) {
+    public init(clientID: String, redirectURI: String, issuerRoots: String = "", verifierRoots: String = "", development: Bool = false,
+                locales: [String] = Locale.preferredLanguages, batchSize: Int = 0) {
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.issuerRoots = issuerRoots
         self.verifierRoots = verifierRoots
         self.development = development
+        self.locales = locales
+        self.batchSize = batchSize
     }
 
     enum CodingKeys: String, CodingKey {
         case clientID = "client_id", redirectURI = "redirect_uri", issuerRoots = "issuer_roots"
-        case verifierRoots = "verifier_roots", development
+        case verifierRoots = "verifier_roots", development, locales, batchSize = "batch_size"
     }
 
     public init(from decoder: Decoder) throws {
@@ -32,12 +44,65 @@ public struct WalletConfiguration: Codable, Sendable {
                   redirectURI: try c.decode(String.self, forKey: .redirectURI),
                   issuerRoots: try c.decodeIfPresent(String.self, forKey: .issuerRoots) ?? "",
                   verifierRoots: try c.decodeIfPresent(String.self, forKey: .verifierRoots) ?? "",
-                  development: try c.decodeIfPresent(Bool.self, forKey: .development) ?? false)
+                  development: try c.decodeIfPresent(Bool.self, forKey: .development) ?? false,
+                  locales: try c.decodeIfPresent([String].self, forKey: .locales) ?? Locale.preferredLanguages,
+                  batchSize: try c.decodeIfPresent(Int.self, forKey: .batchSize) ?? 0)
     }
 
     /// The scheme of `redirectURI`: the callback scheme an
     /// ASWebAuthenticationSession waits for.
     public var callbackScheme: String? { URL(string: redirectURI)?.scheme }
+}
+
+/// An image the issuer names for display: an https URL or a data: image
+/// (nothing else reaches the app), with alternative text.
+public struct Logo: Decodable, Equatable, Sendable {
+    public let uri: String
+    public let altText: String?
+    /// `uri` as a URL, for `AsyncImage`.
+    public var url: URL? { URL(string: uri) }
+    enum CodingKeys: String, CodingKey { case uri, altText = "alt_text" }
+}
+
+/// How to show a credential, from the issuer's metadata (OpenID4VCI 1.0
+/// §12.2.4) in the holder's language: each part only when the issuer
+/// gives it. Colours are CSS colours, such as "#12107c".
+public struct CredentialDisplay: Decodable, Equatable, Sendable {
+    public let issuerName: String?
+    public let issuerLogo: Logo?
+    public let name: String?
+    public let description: String?
+    public let logo: Logo?
+    public let backgroundColor: String?
+    public let textColor: String?
+    enum CodingKeys: String, CodingKey {
+        case issuerName = "issuer_name", issuerLogo = "issuer_logo", name, description, logo
+        case backgroundColor = "background_color", textColor = "text_color"
+    }
+}
+
+/// A credential's revocation status in the issuer's status list, as last
+/// checked (`Wallet.checkStatus(id:)`).
+public struct CredentialStatus: Decodable, Equatable, Sendable {
+    public enum Value: Equatable, Sendable {
+        case valid, revoked, suspended
+        /// A status the issuer's list defines itself, as "0x" and its value.
+        case other(String)
+    }
+    public let value: Value
+    public let checkedAt: Date
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(String.self, forKey: .value) {
+        case "valid": value = .valid
+        case "invalid": value = .revoked
+        case "suspended": value = .suspended
+        case let v: value = .other(v)
+        }
+        checkedAt = try c.decode(Date.self, forKey: .checkedAt)
+    }
+    enum Keys: String, CodingKey { case value, checkedAt = "checked_at" }
 }
 
 /// A credential the wallet holds, as the app shows it.
@@ -53,12 +118,53 @@ public struct CredentialSummary: Decodable, Equatable, Sendable {
     /// (restored to another device, say) it can't be presented. Set in
     /// `Wallet.credentials()` and `Wallet.credential(id:)`.
     public let holderKeyPresent: Bool?
+    /// How to show it, from the issuer's metadata when it was received.
+    public let display: CredentialDisplay?
+    /// When it expires, if it says.
+    public let validUntil: Date?
+    /// Its revocation status, as last checked; nil before any check.
+    public let status: CredentialStatus?
+    /// How many copies the wallet holds, each bound to its own key, and
+    /// how many no Verifier has seen. Each presentation uses one of
+    /// those; once none is left, presentations can be linked.
+    public let copies: Int
+    public let copiesLeft: Int
+
+    /// Whether it has expired by `now`.
+    public func isExpired(at now: Date = Date()) -> Bool { validUntil.map { $0 <= now } ?? false }
 
     enum CodingKeys: String, CodingKey {
-        case id, format, vct, doctype
+        case id, format, vct, doctype, display, status
         case credentialIssuer = "credential_issuer", configurationID = "configuration_id", receivedAt = "received_at"
-        case holderKeyPresent = "holder_key_present"
+        case holderKeyPresent = "holder_key_present", validUntil = "valid_until"
+        case copies, copiesLeft = "copies_left"
     }
+}
+
+/// A credential an issuer will issue later (OpenID4VCI 1.0 §9). It's
+/// kept in the credential store until it's issued, denied or abandoned,
+/// so it survives the app quitting.
+public struct DeferredCredential: Decodable, Equatable, Sendable {
+    public let id: String
+    public let credentialIssuer: String
+    public let configurationID: String
+    /// How long the issuer asked the wallet to wait between polls.
+    public let intervalSeconds: Double
+    public let deferredAt: Date
+    /// When the access token it's polled with expires, if the issuer
+    /// said: after it, polls fail and it can only be abandoned.
+    public let accessTokenExpiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, deferredAt = "deferred_at", accessTokenExpiresAt = "access_token_expires_at"
+        case credentialIssuer = "credential_issuer", configurationID = "configuration_id", intervalSeconds = "interval_seconds"
+    }
+}
+
+/// A deferred credential's state, from `Wallet.pollDeferred(id:)`.
+public enum DeferredStatus: Sendable, Equatable {
+    case pending(intervalSeconds: Double)
+    case issued(CredentialSummary)
 }
 
 /// A credential with its claims, for display.
@@ -164,10 +270,54 @@ public final class Wallet: @unchecked Sendable {
         return try decode(CredentialDetail.self, json)
     }
 
+    /// Fetches the issuer's status list for a credential, checks its
+    /// signature, and returns the credential with its revocation status
+    /// recorded. The list covers many credentials, so fetching it
+    /// doesn't tell the issuer which one is checked. A credential without
+    /// a status list is returned as it is.
+    public func checkStatus(id: String) async throws -> CredentialSummary {
+        let wallet = handle
+        let json = try await OID4VC.cancellable { op in try OID4VC.call { wallet.checkStatus(op, credentialID: id, error: $0) } }
+        return try decode(CredentialSummary.self, json)
+    }
+
     /// Deletes a credential and its holder key.
     public func deleteCredential(id: String) async throws {
         let wallet = handle
         try await OID4VC.offMain { try OID4VC.wrap { try wallet.deleteCredential(id) } }
+    }
+
+    /// The credentials issuers have deferred and not yet settled, oldest
+    /// first — including ones from before the app last quit. Makes no
+    /// network calls: poll each at its interval.
+    public func deferredCredentials() async throws -> [DeferredCredential] {
+        struct Result: Decodable { let deferred: [DeferredCredential] }
+        let wallet = handle
+        let json = try await OID4VC.offMain { try OID4VC.call { wallet.deferred($0) } }
+        return try decode(Result.self, json).deferred
+    }
+
+    /// Asks the issuer once about a deferred credential. A refused one
+    /// throws `.credentialDenied`, and is then no longer pending.
+    public func pollDeferred(id: String) async throws -> DeferredStatus {
+        struct Status: Decodable {
+            let status: String
+            let credential: CredentialSummary?
+            let intervalSeconds: Double
+            enum CodingKeys: String, CodingKey { case status, credential, intervalSeconds = "interval_seconds" }
+        }
+        let wallet = handle
+        let json = try await OID4VC.cancellable { op in try OID4VC.call { wallet.pollDeferred(op, deferredID: id, error: $0) } }
+        let s = try decode(Status.self, json)
+        if s.status == MobileDeferredIssued, let c = s.credential { return .issued(c) }
+        return .pending(intervalSeconds: s.intervalSeconds)
+    }
+
+    /// Gives up on a deferred credential — its access token has expired,
+    /// say, or the holder no longer wants it — deleting it and its keys.
+    public func abandonDeferred(id: String) async throws {
+        let wallet = handle
+        try await OID4VC.offMain { try OID4VC.wrap { try wallet.abandonDeferred(id) } }
     }
 
     /// Resolves a Credential Offer (openid-credential-offer://…) and the
@@ -175,6 +325,19 @@ public final class Wallet: @unchecked Sendable {
     public func startIssuance(offer: String) async throws -> Issuance {
         let wallet = handle
         let s = try await OID4VC.cancellable { op in try OID4VC.wrap { try wallet.startIssuance(op, offerURI: offer) } }
+        return try Issuance(s)
+    }
+
+    /// Completes an authorization begun before the app was suspended or
+    /// relaunched: `redirect` is the issuer's redirect back to the
+    /// redirect URI, delivered to the app (`onOpenURL`). Returns the
+    /// issuance ready for `requestCredentials()`. A redirect matching no
+    /// authorization in progress — not this wallet's, already completed,
+    /// or expired — throws `.notFound`.
+    public func resumeIssuance(redirect: URL) async throws -> Issuance {
+        let wallet = handle
+        let link = redirect.absoluteString
+        let s = try await OID4VC.cancellable { op in try OID4VC.wrap { try wallet.resumeIssuance(op, redirect: link) } }
         return try Issuance(s)
     }
 
@@ -201,8 +364,16 @@ public struct Offer: Decodable, Sendable {
         public let format: String
         public let vct: String?
         public let doctype: String?
+        /// The issuer's display metadata for it, in the holder's language.
         public let name: String?
-        enum CodingKeys: String, CodingKey { case configurationID = "configuration_id", format, vct, doctype, name }
+        public let description: String?
+        public let logo: Logo?
+        public let backgroundColor: String?
+        public let textColor: String?
+        enum CodingKeys: String, CodingKey {
+            case configurationID = "configuration_id", format, vct, doctype, name, description, logo
+            case backgroundColor = "background_color", textColor = "text_color"
+        }
     }
 
     public enum Grant: String, Decodable, Sendable {
@@ -212,13 +383,15 @@ public struct Offer: Decodable, Sendable {
 
     public let credentialIssuer: String
     public let issuerName: String?
+    public let issuerLogo: Logo?
     public let grant: Grant
     /// The PIN to ask the holder for, for a pre-authorized code offer.
     public let txCode: TxCode?
     public let credentials: [Credential]
 
     enum CodingKeys: String, CodingKey {
-        case credentialIssuer = "credential_issuer", issuerName = "issuer_name", grant, txCode = "tx_code", credentials
+        case credentialIssuer = "credential_issuer", issuerName = "issuer_name", issuerLogo = "issuer_logo"
+        case grant, txCode = "tx_code", credentials
     }
 }
 
@@ -248,6 +421,10 @@ public final class Issuance: @unchecked Sendable {
         return url
     }
 
+    /// Completes the authorization with the issuer's redirect back. The
+    /// redirect is used up whatever happens: if this fails — the token
+    /// request didn't get through, say — call `beginAuthorization()`
+    /// again, rather than retrying this.
     public func completeAuthorization(redirect: URL) async throws {
         let session = self.session
         try await OID4VC.cancellable { op in try OID4VC.wrap { try session.completeAuthorization(op, redirect: redirect.absoluteString) } }
@@ -258,16 +435,40 @@ public final class Issuance: @unchecked Sendable {
         try await OID4VC.cancellable { op in try OID4VC.wrap { try session.redeemPreAuthorizedCode(op, txCode: pin) } }
     }
 
-    public struct Deferred: Decodable, Sendable {
-        public let id: String
-        public let configurationID: String
-        public let intervalSeconds: Double
-        enum CodingKeys: String, CodingKey { case id, configurationID = "configuration_id", intervalSeconds = "interval_seconds" }
-    }
-
     public struct Result: Decodable, Sendable {
         public let credentials: [CredentialSummary]
-        public let deferred: [Deferred]
+        /// Credentials the issuer will issue later: poll them with
+        /// `Wallet.pollDeferred(id:)`, after `close()` and relaunches too.
+        public let deferred: [DeferredCredential]
+        /// Credentials the issuer refused for good, or that failed the
+        /// wallet's checks: they don't hold up the rest.
+        public let failed: [FailedCredential]
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            credentials = try c.decode([CredentialSummary].self, forKey: .credentials)
+            deferred = try c.decode([DeferredCredential].self, forKey: .deferred)
+            failed = try c.decodeIfPresent([FailedCredential].self, forKey: .failed) ?? []
+        }
+
+        enum Keys: String, CodingKey { case credentials, deferred, failed }
+    }
+
+    /// An offered credential that couldn't be obtained: its error's code
+    /// and, when the issuer gave one, its OAuth error code.
+    public struct FailedCredential: Decodable, Sendable, Equatable {
+        public let configurationID: String
+        public let code: WalletError.Code
+        public let protocolError: String?
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            configurationID = try c.decode(String.self, forKey: .configurationID)
+            code = WalletError.Code(rawValue: try c.decode(String.self, forKey: .code))
+            protocolError = try c.decodeIfPresent(String.self, forKey: .detail)
+        }
+
+        enum Keys: String, CodingKey { case configurationID = "configuration_id", code, detail }
     }
 
     /// Requests, checks and stores every offered credential.
@@ -277,28 +478,8 @@ public final class Issuance: @unchecked Sendable {
         return try decode(Result.self, json)
     }
 
-    public enum DeferredStatus: Sendable, Equatable {
-        case pending(intervalSeconds: Double)
-        case issued(CredentialSummary)
-    }
-
-    /// Asks the issuer once about a deferred credential. A refused one
-    /// throws `.credentialDenied`.
-    public func pollDeferred(id: String) async throws -> DeferredStatus {
-        struct Status: Decodable {
-            let status: String
-            let credential: CredentialSummary?
-            let intervalSeconds: Double
-            enum CodingKeys: String, CodingKey { case status, credential, intervalSeconds = "interval_seconds" }
-        }
-        let session = self.session
-        let json = try await OID4VC.cancellable { op in try OID4VC.call { session.pollDeferred(op, deferredID: id, error: $0) } }
-        let s = try decode(Status.self, json)
-        if s.status == MobileDeferredIssued, let c = s.credential { return .issued(c) }
-        return .pending(intervalSeconds: s.intervalSeconds)
-    }
-
-    /// Ends the issuance, deleting its keys.
+    /// Ends the issuance, deleting its keys but those its deferred
+    /// credentials still poll with.
     public func close() async throws {
         let session = self.session
         try await OID4VC.offMain { try OID4VC.wrap { try session.close() } }
@@ -432,11 +613,22 @@ func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         if let date = f.date(from: text) { return date }
         f.formatOptions = [.withInternetDateTime]
         if let date = f.date(from: text) { return date }
-        throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "not an RFC 3339 time: \(text)"))
+        throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "not an RFC 3339 time"))
     }
     do {
         return try decoder.decode(type, from: Data(json.utf8))
     } catch {
-        throw WalletError(code: .internalError, message: "malformed result from the Go side: \(error)")
+        // Only where: the decoder's own text can quote a value, a claim.
+        throw WalletError(code: .internalError, message: "malformed result from the Go side at \(codingPath(error))")
     }
+}
+
+/// The coding path a decoding error names, as "a.b[2]", or "the top".
+func codingPath(_ error: Error) -> String {
+    let path: [CodingKey]
+    switch error as? DecodingError {
+    case .dataCorrupted(let c), .keyNotFound(_, let c), .typeMismatch(_, let c), .valueNotFound(_, let c): path = c.codingPath
+    default: return "the top"
+    }
+    return path.isEmpty ? "the top" : path.map { $0.intValue.map { "[\($0)]" } ?? $0.stringValue }.joined(separator: ".")
 }
