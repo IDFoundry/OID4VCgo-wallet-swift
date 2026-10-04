@@ -9,7 +9,7 @@ let package = Package(
     platforms: [.iOS(.v16), .macOS(.v13)],
     products: [.library(name: "OID4VCWallet", targets: ["OID4VCWallet"])],
     targets: [
-        .binaryTarget(name: "Mobile", url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift/releases/download/0.6.1/Mobile.xcframework.zip", checksum: "fd1049eab5757460ebc08e93584ec92ef3e504ba471663b698f34eb3d759d8f5"),
+        .binaryTarget(name: "Mobile", url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift/releases/download/0.6.2/Mobile.xcframework.zip", checksum: "45c659c2affbd4228f2fde1b93e2ad7d508d8f9e1f19959b0a5e011cdf363e27"),
         .target(name: "OID4VCWallet", dependencies: ["Mobile"]),
     ]
 )
