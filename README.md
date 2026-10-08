@@ -4,7 +4,9 @@
 mobile wallet, for iOS 16+ and macOS 13+. It receives credentials over
 OpenID4VCI 1.0 and presents them over OpenID4VP 1.0, under HAIP 1.0, with
 SD-JWT VC and ISO mdoc credentials. OID4VCgo is OpenID Certified for
-those roles.
+those roles. It also presents an mdoc to Safari's Digital Credentials API
+(`org-iso-mdoc`, from an iOS document provider extension), and in person
+over Bluetooth (ISO/IEC 18013-5), as the holder or as the reader.
 
 The protocols run in OID4VCgo's Go code, compiled with gomobile into the
 `Mobile` XCFramework this package links. Your app owns the keys, the
@@ -19,8 +21,11 @@ storage and the UI:
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.1.0")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.8.0")
 ```
+
+In-person presentation needs `NSBluetoothAlwaysUsageDescription` in your
+app's Info.plist.
 
 ## Use
 
@@ -46,7 +51,7 @@ func example(offerLink: String, requestLink: String, pin: String) async throws {
         keyStore: keys,
         credentialStore: try FileCredentialStore.standard(),
         provider: MyWalletProvider())
-    try await wallet.sweepOrphanedKeys(in: keys)   // at launch
+    _ = try await wallet.sweepOrphanedKeys(in: keys)   // at launch
 
     // Receive: an openid-credential-offer:// link.
     let issuance = try await wallet.startIssuance(offer: offerLink)
@@ -62,12 +67,14 @@ func example(offerLink: String, requestLink: String, pin: String) async throws {
     try await issuance.close()
     _ = received
 
-    // Present: an openid4vp:// link.
+    // Present: an openid4vp:// link. presentation.queries lists what each
+    // of the Verifier's queries can be answered with, for the holder to
+    // choose; defaultSelection() is the first choice for each.
     let presentation = try await wallet.startPresentation(request: requestLink)
-    let chosen = presentation.candidates.compactMap { $0.credentials.first?.id }
-    let disclosed = try await presentation.preview(credentialIDs: chosen)   // show the holder
+    let selection = try await presentation.defaultSelection()
+    let disclosed = try await presentation.preview(selection: selection)   // show the holder
     _ = disclosed
-    _ = try await presentation.respond(credentialIDs: chosen)              // Face ID here
+    _ = try await presentation.respond(selection: selection)              // Face ID here
 }
 
 func handle(_ error: Error) -> String {
@@ -85,19 +92,23 @@ Errors are `WalletError`s. Each has:
 
 ## Documentation
 
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.8.0/documentation/oid4vcwallet/): getting started, an article
+  for each task, and the API reference.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
-  the Go side and its [ABI](https://github.com/IDFoundry/OID4VCgo/blob/main/mobile/ABI.md).
-- [MOBILE.md](https://github.com/IDFoundry/OID4VCgo/blob/main/MOBILE.md):
+  what each platform supports, in-person presentation, the Go side and
+  its [ABI](https://github.com/IDFoundry/OID4VCgo/blob/main/mobile/ABI.md).
+- [`mobile/MOBILE.md`](https://github.com/IDFoundry/OID4VCgo/blob/main/mobile/MOBILE.md):
   the design.
 - [The demo wallet app](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile/ios/DemoWallet):
-  a complete app on this package.
+  a complete app on this package, including the document provider.
 
 ## Contributing
 
 This repository is generated: OID4VCgo's `wallet-swift-release`
 workflow publishes every release here from
-[`mobile/ios/OID4VCWallet`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile/ios/OID4VCWallet).
-Issues and pull requests belong in [OID4VCgo](https://github.com/IDFoundry/OID4VCgo).
+[`mobile/ios`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile/ios),
+README included. Issues and pull requests belong in
+[OID4VCgo](https://github.com/IDFoundry/OID4VCgo).
 
 ## License
 
