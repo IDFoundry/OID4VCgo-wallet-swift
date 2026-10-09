@@ -21,7 +21,7 @@ storage and the UI:
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.8.1")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.8.2")
 ```
 
 In-person presentation needs `NSBluetoothAlwaysUsageDescription` in your
@@ -92,7 +92,7 @@ Errors are `WalletError`s. Each has:
 
 ## Documentation
 
-- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.8.1/documentation/oid4vcwallet/): getting started, an article
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.8.2/documentation/oid4vcwallet/): getting started, an article
   for each task, and the API reference.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
   what each platform supports, in-person presentation, the Go side and
