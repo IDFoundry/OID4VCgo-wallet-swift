@@ -16,12 +16,14 @@ storage and the UI:
 - **Storage:** `FileCredentialStore` uses complete file protection and
   is excluded from backup.
 - **Wallet Provider:** you implement `WalletProvider`, which attests the
-  wallet.
+  wallet, for issuers that ask for attestations, as HAIP issuers do; pass
+  `nil` for issuers that don't. Issuance follows each issuer's metadata,
+  or with `issuanceProfile: .haip` refuses issuers outside HAIP.
 
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.8.2")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.9.0")
 ```
 
 In-person presentation needs `NSBluetoothAlwaysUsageDescription` in your
@@ -92,7 +94,7 @@ Errors are `WalletError`s. Each has:
 
 ## Documentation
 
-- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.8.2/documentation/oid4vcwallet/): getting started, an article
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.9.0/documentation/oid4vcwallet/): getting started, an article
   for each task, and the API reference.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
   what each platform supports, in-person presentation, the Go side and

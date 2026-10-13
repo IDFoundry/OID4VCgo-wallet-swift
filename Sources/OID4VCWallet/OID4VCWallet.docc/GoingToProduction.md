@@ -21,6 +21,11 @@ loopback addresses are refused. The rest is the app's.
   ``InMemoryCredentialStore`` is for tests.
 - Call ``Wallet/sweepOrphanedKeys(in:)`` at launch, before any issuance,
   so keys an interrupted issuance left don't accumulate.
+- Make one ``Wallet`` per key store and credential store, and share it
+  for the app's life. Two over the same stores don't coordinate: both
+  could present the same copy of a credential, so Verifiers could link
+  the presentations, or redeem the same refresh token, so the
+  authorization server revokes the grant.
 - A device restored from a backup has no holder keys: its credentials
   show ``CredentialSummary/holderKeyPresent`` as false and can't be
   presented. Delete them, and receive them again.
@@ -46,6 +51,13 @@ development only.
   ``WalletConfiguration/requireTrustedMdocReader`` where every reader
   must be a known one.
 - Never ship with ``WalletConfiguration/development`` set.
+- To pin your services' certificates, set
+  ``WalletConfiguration/tlsPins``: host → base64 SHA-256 digests of a
+  certificate's SubjectPublicKeyInfo. Pin a CA's key, so a leaf renewal
+  doesn't break the app, and keep a backup pin: a wrong set locks the
+  wallet out of that host until an update. Pins cover the SDK's own
+  requests, which `NSPinnedDomains` doesn't reach, not your app's, such
+  as to your Wallet Provider: pin that `URLSession` yourself.
 
 ### Privacy
 
