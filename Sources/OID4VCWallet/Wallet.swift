@@ -263,7 +263,10 @@ public struct WalletConfiguration: Codable, Sendable {
 }
 
 /// An image the issuer names for display: an https URL or a data: image
-/// (nothing else reaches the app), with alternative text.
+/// (nothing else reaches the app, nor an https URL naming an IP address or
+/// localhost), with alternative text. Loading the URL tells whoever serves
+/// it that the holder is looking: fetch it once, when the holder accepts
+/// the credential rather than on the offer's preview, and keep it.
 public struct Logo: Decodable, Equatable, Sendable {
     /// The image: an https URL or a `data:` URL.
     public let uri: String
@@ -1001,9 +1004,9 @@ public final class Presentation: @unchecked Sendable {
 
     /// The selection the wallet would make itself, for an app with no
     /// policy of its own, or to start from: the first answerable option
-    /// of each credential set, and each query's first credential (all of
-    /// them when it takes several). Throws `noMatchingCredential` when
-    /// the request can't be answered.
+    /// of each credential set, and each query's first credential, even
+    /// when it takes several: the holder adds the others. Throws
+    /// `noMatchingCredential` when the request can't be answered.
     public func defaultSelection() async throws -> Selection {
         struct All: Decodable { let selection: Selection }
         let p = handle
