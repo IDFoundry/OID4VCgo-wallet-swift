@@ -55,6 +55,20 @@ public struct WalletConfiguration: Codable, Sendable {
     /// usage. Outside `development`, required when `issuerMetadataRoots`
     /// may share a trust anchor with another role's roots.
     public var issuerMetadataRequireEKU: String
+    /// PEM certificates: the IACAs a received mdoc must chain to, in place
+    /// of `issuerRoots`, so an `issuerRoots` anchor alone, an SD-JWT VC
+    /// issuer's CA say, can't sign an mDL. Empty: mdocs chain to
+    /// `issuerRoots`.
+    public var mdocIssuerRoots: String
+    /// Each document type's own IACAs, as PEM certificates: an mdoc of a
+    /// type named here must chain to them, not to `mdocIssuerRoots` or
+    /// `issuerRoots`. A type named with an empty string is refused.
+    public var mdocIssuerRootsByDocType: [String: String]
+    /// A dotted object identifier: recognizes only document signer
+    /// certificates with that extended key usage (the mDL's is
+    /// 1.0.18013.5.1.2), in place of `issuerRequireEKU`, so a wallet
+    /// receiving both formats can require each its own.
+    public var mdocIssuerRequireEKU: String
     /// Relaxes what production requires, for a wallet talking to services
     /// on a development machine. Never ship an app with it set. It lets
     /// issuers, Authorization Servers, Verifiers and status lists be on
@@ -122,6 +136,32 @@ public struct WalletConfiguration: Codable, Sendable {
     /// How an in-person response authenticates the mdoc. `.macPreferred`
     /// needs a key store that is also a `KeyAgreement`.
     public var proximityDeviceAuth: ProximityDeviceAuth
+    /// PEM `X509 CRL` blocks: the Certificate Revocation Lists the roles
+    /// in `revocation` are checked against. Replace them at runtime with
+    /// `Wallet.setCRLs(_:)` as they expire.
+    public var crls: String
+    /// The trust roles whose certificate chains must pass a CRL check
+    /// against `crls`. A role listed fails closed for any CA it has no
+    /// current CRL from, until `Wallet.setCRLs(_:)` supplies one; a role
+    /// not listed checks no revocation.
+    public var revocation: [RevocationRole]
+
+    /// A trust role whose certificates can be checked for revocation.
+    public enum RevocationRole: String, Codable, Sendable, CaseIterable {
+        /// The issuers' signing certificates (`issuerRoots` and the mdoc
+        /// roots), on receipt, deferral and refresh.
+        case issuer
+        /// The signers of Credential Issuer Metadata (`issuerMetadataRoots`).
+        case issuerMetadata = "issuer_metadata"
+        /// The registrars of Verifiers (`registrarRoots`).
+        case registrar
+        /// The mdoc readers (`mdocReaderRoots`), online and in person.
+        case mdocReader = "mdoc_reader"
+        /// The Verifiers' request-signing certificates (`verifierRoots`).
+        case verifier
+        /// The signers of status lists, in `checkStatus`.
+        case status
+    }
 
     /// How an in-person response authenticates the mdoc (ISO/IEC 18013-5
     /// §9.1.3).
@@ -174,7 +214,9 @@ public struct WalletConfiguration: Codable, Sendable {
                 issuerRequireEKU: String = "", issuerMetadataRequireEKU: String = "",
                 statusIssuers: [String: [String]] = [:], requireIssuerName: Bool = false,
                 issuerMetadataRoots: String = "", requireSignedIssuerMetadata: Bool = false,
-                requireIssuerMetadataName: Bool = false, maxIssuerMetadataAgeSeconds: Int = 0, allowForeignIss: Bool = false) {
+                requireIssuerMetadataName: Bool = false, maxIssuerMetadataAgeSeconds: Int = 0, allowForeignIss: Bool = false,
+                mdocIssuerRoots: String = "", mdocIssuerRootsByDocType: [String: String] = [:], mdocIssuerRequireEKU: String = "",
+                crls: String = "", revocation: [RevocationRole] = []) {
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.issuerRoots = issuerRoots
@@ -202,6 +244,11 @@ public struct WalletConfiguration: Codable, Sendable {
         self.requireIssuerMetadataName = requireIssuerMetadataName
         self.maxIssuerMetadataAgeSeconds = maxIssuerMetadataAgeSeconds
         self.allowForeignIss = allowForeignIss
+        self.mdocIssuerRoots = mdocIssuerRoots
+        self.mdocIssuerRootsByDocType = mdocIssuerRootsByDocType
+        self.mdocIssuerRequireEKU = mdocIssuerRequireEKU
+        self.crls = crls
+        self.revocation = revocation
     }
 
     enum CodingKeys: String, CodingKey {
@@ -217,6 +264,9 @@ public struct WalletConfiguration: Codable, Sendable {
         case issuerMetadataRoots = "issuer_metadata_roots", requireSignedIssuerMetadata = "require_signed_issuer_metadata"
         case requireIssuerMetadataName = "require_issuer_metadata_name", maxIssuerMetadataAgeSeconds = "max_issuer_metadata_age_seconds"
         case allowForeignIss = "allow_foreign_iss"
+        case mdocIssuerRoots = "mdoc_issuer_roots", mdocIssuerRootsByDocType = "mdoc_issuer_roots_by_doctype"
+        case mdocIssuerRequireEKU = "mdoc_issuer_require_eku"
+        case crls, revocation
     }
 
     /// Decodes a configuration, refusing a key it doesn't know: a
@@ -254,7 +304,12 @@ public struct WalletConfiguration: Codable, Sendable {
                   requireSignedIssuerMetadata: try c.decodeIfPresent(Bool.self, forKey: .requireSignedIssuerMetadata) ?? false,
                   requireIssuerMetadataName: try c.decodeIfPresent(Bool.self, forKey: .requireIssuerMetadataName) ?? false,
                   maxIssuerMetadataAgeSeconds: try c.decodeIfPresent(Int.self, forKey: .maxIssuerMetadataAgeSeconds) ?? 0,
-                  allowForeignIss: try c.decodeIfPresent(Bool.self, forKey: .allowForeignIss) ?? false)
+                  allowForeignIss: try c.decodeIfPresent(Bool.self, forKey: .allowForeignIss) ?? false,
+                  mdocIssuerRoots: try c.decodeIfPresent(String.self, forKey: .mdocIssuerRoots) ?? "",
+                  mdocIssuerRootsByDocType: try c.decodeIfPresent([String: String].self, forKey: .mdocIssuerRootsByDocType) ?? [:],
+                  mdocIssuerRequireEKU: try c.decodeIfPresent(String.self, forKey: .mdocIssuerRequireEKU) ?? "",
+                  crls: try c.decodeIfPresent(String.self, forKey: .crls) ?? "",
+                  revocation: try c.decodeIfPresent([RevocationRole].self, forKey: .revocation) ?? [])
     }
 
     /// The scheme of `redirectURI`: the callback scheme an
@@ -564,6 +619,19 @@ public final class Wallet: @unchecked Sendable {
         let wallet = handle
         let json = try await OID4VC.cancellable { op in try OID4VC.call { wallet.refreshCredential(op, credentialID: id, error: $0) } }
         return try decode(Refreshed.self, json)
+    }
+
+    /// Replaces the Certificate Revocation Lists the configuration's
+    /// `revocation` roles are checked against with `pem`'s `X509 CRL`
+    /// blocks, for every check from now on. CRLs expire at their
+    /// nextUpdate: fetch fresh ones and call this before then. Text
+    /// holding anything else, or a list that doesn't parse, throws
+    /// `invalidInput` and keeps the lists as they were; empty text removes
+    /// them all, and a role checked then fails closed. Makes no network
+    /// calls.
+    public func setCRLs(_ pem: String) async throws {
+        let wallet = handle
+        try await OID4VC.offMain { try OID4VC.wrap { try wallet.setCRLs(pem) } }
     }
 
     /// Deletes a credential and its holder keys, and its refresh grant
@@ -915,8 +983,9 @@ public final class Presentation: @unchecked Sendable {
         /// The held credentials that can answer it.
         public let credentials: [CredentialSummary]
         /// For a Verifier with a verified registration: the claims paths
-        /// this query asks for beyond it, and whether it asks for every
-        /// claim. Nothing is refused for them: the holder decides.
+        /// this query asks for beyond it, then those its credentials would
+        /// disclose along with them beyond it (the rest of an array
+        /// disclosed as one, say). Nothing is refused for them: the holder decides.
         public let unregistered: [[PathElement]]
         /// Whether it asks for every claim, beyond a verified registration.
         public let unregisteredAll: Bool
@@ -958,9 +1027,11 @@ public final class Presentation: @unchecked Sendable {
         /// The claims it would disclose, as paths.
         public let claims: [[PathElement]]
         /// The SD-JWT VC claims the Verifier receives beyond `claims`:
-        /// those its issuer didn't make selectively disclosable, and the
-        /// plaintext members of a disclosed object a claim sits within.
-        /// Show them with `claims`.
+        /// those its issuer didn't make selectively disclosable, and what
+        /// shares a Disclosure with a claim: the plaintext members of a
+        /// disclosed object or array element a claim sits within, and the
+        /// other elements of an array disclosed as one. Show them with
+        /// `claims`.
         public let alwaysDisclosed: [[PathElement]]
         /// The claims the Verifier says it will keep (an mdoc query's
         /// `intent_to_retain`): show that with them.
@@ -1055,11 +1126,20 @@ public final class MdocPresentation: @unchecked Sendable {
         public let origin: String
         /// The subject common name of the reader that signed the request,
         /// when its certificate chains to
-        /// `WalletConfiguration.mdocReaderRoots`; "" when the holder can
-        /// only be shown `origin`.
+        /// `WalletConfiguration.mdocReaderRoots`, without control or
+        /// invisible format characters; "" when the holder can only be
+        /// shown `origin`.
         public let reader: String
+        /// That reader's certificate, DER; nil without one. Compare
+        /// certificates, not names: two can share a name.
+        public let readerCertificate: Data?
         /// The requested documents, in the request's order.
         public let documents: [Document]
+
+        enum CodingKeys: String, CodingKey {
+            case origin, reader, documents
+            case readerCertificate = "reader_certificate"
+        }
     }
 
     /// One requested document.
