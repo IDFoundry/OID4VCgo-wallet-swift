@@ -35,6 +35,8 @@ is a complete, working app on this package to compare against.
   (<doc:GettingStarted>)
 - One ``Wallet``, created at launch and kept for the app's life, with
   ``Wallet/sweepOrphanedKeys(in:)`` run before any issuance.
+- Each setting in <doc:GoingToProduction>'s "Settings to decide" is
+  decided and recorded.
 - Trust roots are PEM in ``WalletConfiguration``, each in its own role:
   ``WalletConfiguration/issuerRoots``, ``WalletConfiguration/verifierRoots``,
   ``WalletConfiguration/mdocReaderRoots`` and the rest. Outside
@@ -102,8 +104,14 @@ is a complete, working app on this package to compare against.
   ``Presentation/preview(selection:)`` says would be disclosed, before
   the holder agrees. Then ``Presentation/respond(selection:)``, or
   ``Presentation/decline()``.
+- Respond with the selection whose preview the holder saw: a changed
+  selection is previewed and shown again first.
 - Open ``Presentation/Presented/redirectURI``, when there is one, in the
   browser the request came from.
+- ``WalletError/Code/requestRefused`` from
+  ``Wallet/startPresentation(request:)``: open
+  ``Wallet/takeRefusalRedirect()`` when it returns a URL, and tell the
+  holder the request wasn't answered. (<doc:HandlingErrors>)
 - ``WalletError/Code/deliveryUnknown`` isn't retried: tell the holder to
   check with the Verifier.
 - *Check:* a Verifier outside ``WalletConfiguration/verifierRoots`` is
@@ -117,7 +125,9 @@ is a complete, working app on this package to compare against.
   Mobile Document Provider capability and doctypes entitlement on both
   the app's and the extension's App IDs.
 - Credentials in an App Group both list
-  (``FileCredentialStore/inAppGroup(_:options:)``), holder keys in a
+  (``FileCredentialStore/inAppGroup(_:options:)``, whose
+  ``CredentialStore/compareAndSwap(id:expected:record:)`` locks a file
+  both processes see, so they never both use one copy), holder keys in a
   Keychain access group both list
   (``KeychainKeyStore/Options/holderAccessGroup``), and the
   configuration where the extension can read it. The extension opens
@@ -155,6 +165,10 @@ is a complete, working app on this package to compare against.
   `issuerRoots`, plus a reader key and chain with the
   reader-authentication extended key usage if holders should see who's
   asking.
+- `development` not set, with each role (`issuer`, `status`) in
+  `revocation` (with `crls`, refreshed by `setCRLs`) or
+  `noRevocationCheck`, and `anyIssuerForAnyType` or
+  `issuerRootsByDocType` deciding which IACAs issue which document type.
 - ``ProximityReader/start(qrCode:docType:elements:timeouts:)`` with the
   scanned code, following the session's states.
 - Call ``ProximityReaderSession/checkStatus()`` once the session is
@@ -167,6 +181,7 @@ is a complete, working app on this package to compare against.
 ### 7. Before shipping
 
 - <doc:GoingToProduction> is done: ``WalletConfiguration/development``
-  isn't set, and the Wallet Provider checks App Attest evidence.
+  isn't set, nor ``ProximityReaderConfiguration/development``, and the
+  Wallet Provider checks App Attest evidence.
 - Interop beyond your own app: test your holder against at least one
   independent reader, and your reader against an independent holder.

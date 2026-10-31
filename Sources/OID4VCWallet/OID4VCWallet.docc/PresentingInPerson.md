@@ -95,15 +95,23 @@ A ``ProximityReader`` needs no ``Wallet``: give it the IACAs whose
 mdocs it accepts, and, to sign its requests so holders see who is
 asking, a key in a ``KeyStore`` and its certificate chain, with the
 reader authentication extended key usage
-(``ProximityReaderConfiguration``). ``ProximityReader/start(qrCode:docType:elements:timeouts:)``
+(``ProximityReaderConfiguration``). The reader is a production one: it
+refuses (`invalidInput`) a configuration that leaves a decision open:
+which IACAs issue which document types (`anyIssuerForAnyType`, or
+`issuerRootsByDocType`), and each role's revocation (`revocation` with
+`crls`, or `noRevocationCheck` to decline). `development` relaxes
+this, for trying out a development issuer's documents; never ship an
+app with it set. ``ProximityReader/start(qrCode:docType:elements:timeouts:)``
 takes the holder's QR code and what to ask for.
 
 ```swift
 /// Reads an mDL's name and portrait from the holder whose QR code was
 /// scanned. Returns the verified mdoc, or nil if the holder declined or
 /// the mdoc isn't known to be unrevoked.
-func readInPerson(qrCode: String, issuerRoots: String) async throws -> VerifiedMdoc? {
-    let reader = try ProximityReader(configuration: ProximityReaderConfiguration(issuerRoots: issuerRoots))
+func readInPerson(qrCode: String, issuerRoots: String, crls: String) async throws -> VerifiedMdoc? {
+    let reader = try ProximityReader(configuration: ProximityReaderConfiguration(
+        issuerRoots: issuerRoots, crls: crls, revocation: [.issuer, .status],
+        anyIssuerForAnyType: true))
     let session = try reader.start(qrCode: qrCode, docType: "org.iso.18013.5.1.mDL",
                                    elements: ["org.iso.18013.5.1": ["given_name", "family_name", "portrait"]])
     for await state in session.states {

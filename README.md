@@ -16,7 +16,8 @@ storage and the UI:
 - **Keys:** `KeychainKeyStore` keeps them in the Secure Enclave. Holder
   keys can require Face ID to present.
 - **Storage:** `FileCredentialStore` uses complete file protection and
-  is excluded from backup.
+  is excluded from backup. Its writes lock a file in its directory, so
+  an app and its extension can share one in an App Group.
 - **Wallet Provider:** you implement `WalletProvider`, which attests the
   wallet, for issuers that ask for attestations, as HAIP issuers do; pass
   `nil` for issuers that don't. Issuance follows each issuer's metadata,
@@ -25,7 +26,7 @@ storage and the UI:
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.19.0")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.20.0")
 ```
 
 In-person presentation needs `NSBluetoothAlwaysUsageDescription` in your
@@ -96,9 +97,9 @@ Errors are `WalletError`s. Each has:
 
 ## Documentation
 
-- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.19.0/documentation/oid4vcwallet/): getting started, an article
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.20.0/documentation/oid4vcwallet/): getting started, an article
   for each task, and the API reference.
-- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.19.0/documentation/oid4vcwallet/integrationchecklist): every step
+- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.20.0/documentation/oid4vcwallet/integrationchecklist): every step
   and rule in order, each with how to check it.
 - What's new: each [release](https://github.com/IDFoundry/OID4VCgo-wallet-swift/releases)'s notes.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
@@ -112,7 +113,7 @@ Errors are `WalletError`s. Each has:
 ## For coding assistants
 
 Integrating this package for someone? Follow
-[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.19.0/documentation/oid4vcwallet/integrationchecklist), and read the
+[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.20.0/documentation/oid4vcwallet/integrationchecklist), and read the
 documentation's Getting started article, then the article for each
 feature, before writing code. Use only the public API those name: never the `Mobile` framework's
 generated types directly, and don't reimplement the protocols or the

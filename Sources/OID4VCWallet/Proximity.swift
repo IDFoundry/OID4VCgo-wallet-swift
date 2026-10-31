@@ -345,6 +345,11 @@ public final class ProximityPresentation: @unchecked Sendable {
             broadcast.update(.requestReceived(request)) { if case .responding = $0 { true } else { false } }
             throw error
         }
+        // Cancelled once Go's Respond had returned (cancelled before, it
+        // gives nothing to send): the response stays here.
+        if ending.withLock({ $0 }) != nil {
+            throw WalletError(code: .cancelled, message: "the session was cancelled")
+        }
         do {
             try await transport.send(answer.send)
         } catch let e as ProximityTransportError {
@@ -535,6 +540,11 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
     public var maxClockSkewSeconds: Int?
     /// Accepts only document signers with the mDL document signer extended key usage.
     public var requireMDLSignerEKU: Bool
+    /// Also accepts a document signer certificate with no extended key
+    /// usage, which is refused by default for lacking the mDL document
+    /// signer's, for issuers whose document signers have none. It can't
+    /// be set with `requireMDLSignerEKU`.
+    public var acceptMDLSignerWithoutEKU: Bool
     /// Each document type's own IACAs, as PEM certificates: a document of a
     /// type named here must chain to them, not to `issuerRoots`, so an
     /// issuer trusted for one document type can't sign another. With it,
@@ -553,6 +563,23 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
     /// roots, for a role in `revocation`, as
     /// `WalletConfiguration.crlIssuers`.
     public var crlIssuers: String
+    /// The roles that decline checking revocation, for where something
+    /// else stands in for it. Outside `development`, each role must be in
+    /// `revocation` or here; a role can't be in both.
+    public var noRevocationCheck: [RevocationRole]
+    /// Declares that every IACA in `issuerRoots` may issue every document
+    /// type the reader asks for. Outside `development`, `issuerRoots`
+    /// needs it; otherwise name each type's IACAs in `issuerRootsByDocType`.
+    public var anyIssuerForAnyType: Bool
+    /// Relaxes what production requires, for a reader trying out a
+    /// development issuer's documents. Never ship an app with it set.
+    /// Without it, `ProximityReader` requires a production reader's
+    /// decisions, failing with `invalidInput` otherwise: each
+    /// role in `revocation` or `noRevocationCheck`, and
+    /// `anyIssuerForAnyType` with `issuerRoots`. With it, a role in
+    /// neither checks no revocation, and any IACA in `issuerRoots` may
+    /// issue any document type.
+    public var development: Bool
 
     /// A reader's trust role whose certificates can be checked for
     /// revocation.
@@ -567,25 +594,32 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
     /// A configuration accepting mdocs under `issuerRoots`; with `readerKeyID`
     /// and `readerChain`, requests are signed.
     public init(issuerRoots: String, readerKeyID: String? = nil, readerChain: String? = nil,
-                maxClockSkewSeconds: Int? = nil, requireMDLSignerEKU: Bool = false,
+                maxClockSkewSeconds: Int? = nil, requireMDLSignerEKU: Bool = false, acceptMDLSignerWithoutEKU: Bool = false,
                 issuerRootsByDocType: [String: String] = [:], crls: String = "", revocation: [RevocationRole] = [],
-                crlIssuers: String = "") {
+                crlIssuers: String = "", noRevocationCheck: [RevocationRole] = [], anyIssuerForAnyType: Bool = false,
+                development: Bool = false) {
         self.issuerRoots = issuerRoots
         self.readerKeyID = readerKeyID
         self.readerChain = readerChain
         self.maxClockSkewSeconds = maxClockSkewSeconds
         self.requireMDLSignerEKU = requireMDLSignerEKU
+        self.acceptMDLSignerWithoutEKU = acceptMDLSignerWithoutEKU
         self.issuerRootsByDocType = issuerRootsByDocType
         self.crls = crls
         self.revocation = revocation
         self.crlIssuers = crlIssuers
+        self.noRevocationCheck = noRevocationCheck
+        self.anyIssuerForAnyType = anyIssuerForAnyType
+        self.development = development
     }
 
     enum CodingKeys: String, CodingKey {
         case issuerRoots = "issuer_roots", readerKeyID = "reader_key_id", readerChain = "reader_chain"
         case maxClockSkewSeconds = "max_clock_skew_seconds", requireMDLSignerEKU = "require_mdl_signer_eku"
+        case acceptMDLSignerWithoutEKU = "accept_mdl_signer_without_eku"
         case issuerRootsByDocType = "issuer_roots_by_doctype"
         case crls, revocation, crlIssuers = "crl_issuers"
+        case noRevocationCheck = "no_revocation_check", anyIssuerForAnyType = "any_issuer_for_any_type", development
     }
 
     public init(from decoder: any Decoder) throws {
@@ -596,9 +630,13 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         readerChain = try c.decodeIfPresent(String.self, forKey: .readerChain)
         maxClockSkewSeconds = try c.decodeIfPresent(Int.self, forKey: .maxClockSkewSeconds)
         requireMDLSignerEKU = try c.decodeIfPresent(Bool.self, forKey: .requireMDLSignerEKU) ?? false
+        acceptMDLSignerWithoutEKU = try c.decodeIfPresent(Bool.self, forKey: .acceptMDLSignerWithoutEKU) ?? false
         crls = try c.decodeIfPresent(String.self, forKey: .crls) ?? ""
         revocation = try c.decodeIfPresent([RevocationRole].self, forKey: .revocation) ?? []
         crlIssuers = try c.decodeIfPresent(String.self, forKey: .crlIssuers) ?? ""
+        noRevocationCheck = try c.decodeIfPresent([RevocationRole].self, forKey: .noRevocationCheck) ?? []
+        anyIssuerForAnyType = try c.decodeIfPresent(Bool.self, forKey: .anyIssuerForAnyType) ?? false
+        development = try c.decodeIfPresent(Bool.self, forKey: .development) ?? false
     }
 }
 
