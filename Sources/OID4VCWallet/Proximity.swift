@@ -93,6 +93,10 @@ public struct ProximityReaderIdentity: Sendable {
     public let certificates: [CertificateDetails]
     /// Why `status` isn't `.trusted`, for logs.
     public let error: String?
+    /// `certificate_revoked` or `no_current_crl` (`MobileDetailCertificateRevoked`,
+    /// `MobileDetailNoCurrentCRL`) when `error` is the reader certificate's
+    /// revocation check, nil otherwise. From OID4VCWallet 0.27.0.
+    public var errorDetail: String? = nil
     /// The name an untrusted or invalid request's certificate gives
     /// itself: anyone can claim any name, so never show it as the
     /// reader's. "" when the reader is trusted or didn't sign.
@@ -439,8 +443,9 @@ struct ReaderJSON: Decodable {
     let chain: [Data]
     let certificates: [ProximityReaderIdentity.CertificateDetails]?
     let error: String?
+    let errorDetail: String?
 
-    enum CodingKeys: String, CodingKey { case status, name, claimedName = "claimed_name", chain, certificates, error }
+    enum CodingKeys: String, CodingKey { case status, name, claimedName = "claimed_name", chain, certificates, error, errorDetail = "error_detail" }
 
     var identity: ProximityReaderIdentity {
         ProximityReaderIdentity(
@@ -449,6 +454,7 @@ struct ReaderJSON: Decodable {
             chain: chain.compactMap { SecCertificateCreateWithData(nil, $0 as CFData) },
             certificates: certificates ?? [],
             error: error,
+            errorDetail: errorDetail,
             claimedName: claimedName ?? "")
     }
 }
@@ -599,6 +605,13 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
     /// (`invalidInput`) unless the app called
     /// `OID4VC.allowDevelopmentInRelease()`.
     public var development: Bool
+    /// PEM certificates ``ProximityReader/refreshCRLs()``'s `https`
+    /// fetches trust besides the system's, as
+    /// ``WalletConfiguration/developmentRoots``: a development CA's
+    /// distribution points served under its own TLS certificate. Only
+    /// with `development` (`invalidInput` otherwise). From OID4VCWallet
+    /// 0.27.0.
+    public var developmentRoots: String
 
     /// A reader's trust role whose certificates can be checked for
     /// revocation.
@@ -628,7 +641,7 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
                 crlIssuers: String = "", noRevocationCheck: [RevocationRole] = [], anyIssuerForAnyType: Bool = false,
                 statusCheck: StatusCheck? = nil, development: Bool = false,
                 crlDistributionPoints: [CRLDistributionPoint] = [], crlDistributionPointsFromRoots: Bool = false,
-                crlRequireHTTPS: Bool = false) {
+                crlRequireHTTPS: Bool = false, developmentRoots: String = "") {
         self.issuerRoots = issuerRoots
         self.readerKeyID = readerKeyID
         self.readerChain = readerChain
@@ -646,6 +659,7 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         self.crlDistributionPoints = crlDistributionPoints
         self.crlDistributionPointsFromRoots = crlDistributionPointsFromRoots
         self.crlRequireHTTPS = crlRequireHTTPS
+        self.developmentRoots = developmentRoots
     }
 
     enum CodingKeys: String, CodingKey {
@@ -658,6 +672,7 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         case statusCheck = "status"
         case crlDistributionPoints = "crl_distribution_points"
         case crlDistributionPointsFromRoots = "crl_distribution_points_from_roots", crlRequireHTTPS = "crl_require_https"
+        case developmentRoots = "development_roots"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -679,6 +694,7 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         crlDistributionPoints = try c.decodeIfPresent([CRLDistributionPoint].self, forKey: .crlDistributionPoints) ?? []
         crlDistributionPointsFromRoots = try c.decodeIfPresent(Bool.self, forKey: .crlDistributionPointsFromRoots) ?? false
         crlRequireHTTPS = try c.decodeIfPresent(Bool.self, forKey: .crlRequireHTTPS) ?? false
+        developmentRoots = try c.decodeIfPresent(String.self, forKey: .developmentRoots) ?? ""
     }
 }
 
