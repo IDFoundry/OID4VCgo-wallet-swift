@@ -1,7 +1,7 @@
 # OID4VCgo-wallet-swift
 
 `OID4VCWallet`: the Swift package of [OID4VCgo](https://github.com/IDFoundry/OID4VCgo)'s
-mobile wallet, for iOS 16+ and macOS 13+. It receives credentials over
+mobile wallet, for iOS 15+ and macOS 13+. It receives credentials over
 OpenID4VCI 1.0 and presents them over OpenID4VP 1.0, under HAIP 1.0, with
 SD-JWT VC and ISO mdoc credentials. OID4VCgo is OpenID Certified for
 those roles. It also presents an mdoc to Safari's Digital Credentials API
@@ -26,7 +26,7 @@ storage and the UI:
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.27.0")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.28.0")
 ```
 
 In-person presentation needs `NSBluetoothAlwaysUsageDescription` in your
@@ -44,7 +44,7 @@ struct MyWalletProvider: WalletProvider {
     func walletAttestation(clientID: String, instanceKey: Data) async throws -> String {
         fatalError("call your Wallet Provider")
     }
-    func keyAttestation(keys: [Data], nonce: String) async throws -> String {
+    func keyAttestation(instanceKey: Data, keys: [Data], nonce: String) async throws -> String {
         fatalError("call your Wallet Provider")
     }
 }
@@ -97,9 +97,9 @@ Errors are `WalletError`s. Each has:
 
 ## Documentation
 
-- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.27.0/documentation/oid4vcwallet/): getting started, an article
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.28.0/documentation/oid4vcwallet/): getting started, an article
   for each task, and the API reference.
-- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.27.0/documentation/oid4vcwallet/integrationchecklist): every step
+- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.28.0/documentation/oid4vcwallet/integrationchecklist): every step
   and rule in order, each with how to check it.
 - What's new: each [release](https://github.com/IDFoundry/OID4VCgo-wallet-swift/releases)'s notes.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
@@ -113,7 +113,7 @@ Errors are `WalletError`s. Each has:
 ## For coding assistants
 
 Integrating this package for someone? Follow
-[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.27.0/documentation/oid4vcwallet/integrationchecklist), and read the
+[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.28.0/documentation/oid4vcwallet/integrationchecklist), and read the
 documentation's Getting started article, then the article for each
 feature, before writing code. Use only the public API those name: never the `Mobile` framework's
 generated types directly, and don't reimplement the protocols or the

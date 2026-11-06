@@ -72,6 +72,16 @@ then rests on your app keeping them in the Secure Enclave, as
 by contrast, hands its provider each key's Android Key Attestation
 chain.
 
+Each issuance has an instance key of its own, and a Key Attestation
+names it: the `instanceKey` of
+``WalletProvider/keyAttestation(instanceKey:keys:nonce:)``, the key that
+issuance's ``WalletProvider/walletAttestation(clientID:instanceKey:)``
+asked for first. Refuse one you didn't attest for this installation,
+and give the Key Attestation that instance key's status list entry, so
+suspending or revoking the installation withdraws its Key Attestations
+along with its Wallet Attestations (the Wallet Provider protocol's
+`instance_key`).
+
 ### Trust
 
 - Configure only your ecosystem's roots: ``WalletConfiguration/issuerRoots``
@@ -138,7 +148,8 @@ serve `https`. A ``ProximityReader`` has the same
 ``ProximityReader/refreshCRLs()``.
 
 The SDK schedules nothing: an iOS app's process is suspended in the
-background. Refresh when the app comes to the foreground and in a
+background. Refresh when the app comes to the foreground, once
+``CRLRefreshResult/nextRefresh`` has passed, and in a
 `BGAppRefreshTask`, and keep ``CRLRefreshResult/crls`` to pass back as
 ``WalletConfiguration/crls`` at the next launch, so checks work before
 the first refresh and an older list is still refused after a restart.
@@ -150,13 +161,16 @@ import BackgroundTasks
 import OID4VCWallet
 import UIKit
 
-/// Keeps a wallet's CRLs current: at launch, at every foreground and
-/// in background app refresh, persisting the lists for the next launch.
+/// Keeps a wallet's CRLs current: at launch, at a foreground once the
+/// last result's `nextRefresh` has passed, and in background app
+/// refresh, persisting the lists for the next launch.
 @MainActor
 final class CRLRefresher {
     static let taskIdentifier = "com.example.wallet.crl-refresh"
     private let wallet: Wallet
     private let storedLists: URL
+    /// When the next refresh is due; distantPast until one succeeds.
+    private var due = Date.distantPast
 
     init(wallet: Wallet, storedLists: URL) {
         self.wallet = wallet
@@ -179,7 +193,9 @@ final class CRLRefresher {
             task.expirationHandler = { work.cancel() }
         }
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
-            Task { @MainActor in _ = await self.refresh() }
+            Task { @MainActor in
+                if Date() >= self.due { _ = await self.refresh() }
+            }
         }
     }
 
@@ -193,8 +209,10 @@ final class CRLRefresher {
             let result = try await wallet.refreshCRLs()
             try result.crls.write(to: storedLists, atomically: true, encoding: .utf8)
             next = result.nextRefresh
+            due = result.nextRefresh
             return !result.anyFailed
         } catch {
+            due = .distantPast
             return false
         }
     }
@@ -245,6 +263,17 @@ ecosystem, and record why:
   sign an issuer's status lists for it. Without it, only the issuer's
   own lists are accepted: add only delegations your ecosystem
   publishes.
+- ``WalletConfiguration/statusMaxBytes`` and
+  ``WalletConfiguration/identifierListMaxBytes``: the largest status
+  list (1 MiB) and identifier list (4 MiB) `checkStatus` reads. A
+  larger list fails every check of the credentials on it: raise them
+  only for issuers whose lists are larger.
+- ``WalletConfiguration/statusCacheDir``: a directory of the app's
+  own, under its Caches directory, where `checkStatus` keeps the lists
+  it verified across launches. Each launch then revalidates a kept
+  list with its server (a `304 Not Modified`) instead of downloading it
+  again, which matters for lists of millions of entries; a list the
+  server doesn't confirm is never used.
 - ``WalletConfiguration/mdocIssuerRoots`` and
   ``WalletConfiguration/mdocIssuerRootsByDocType``: the IACAs mdocs, or
   each document type, must chain to, instead of

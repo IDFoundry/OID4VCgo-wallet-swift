@@ -70,6 +70,13 @@ public protocol CredentialStore: Sendable {
     func record(id: String) throws -> Data?
     /// Every record.
     func records() throws -> [Data]
+    /// The records whose IDs `isIncluded` accepts. The wallet lists one
+    /// kind of record at a time this way — its credentials, or the
+    /// pending deferred credentials, authorizations or refresh grants it
+    /// keeps beside them — so a store that decrypts each record reads
+    /// only those. It may return others too: the wallet tells records
+    /// apart. The default returns ``records()``.
+    func records(where isIncluded: (String) -> Bool) throws -> [Data]
     /// Deletes the record; deleting one that doesn't exist isn't an
     /// error.
     func delete(id: String) throws
@@ -96,6 +103,8 @@ public protocol CredentialStore: Sendable {
 
 public extension CredentialStore {
     var isDurable: Bool { false }
+
+    func records(where isIncluded: (String) -> Bool) throws -> [Data] { try records() }
 }
 
 /// The Wallet Provider's backend, which attests the wallet and its keys
@@ -105,8 +114,13 @@ public extension CredentialStore {
 public protocol WalletProvider: Sendable {
     /// A Wallet Attestation binding `instanceKey` to `clientID`.
     func walletAttestation(clientID: String, instanceKey: Data) async throws -> String
-    /// A Key Attestation over `keys`, carrying the issuer's `nonce`.
-    func keyAttestation(keys: [Data], nonce: String) async throws -> String
+    /// A Key Attestation over `keys`, carrying the issuer's `nonce`, for
+    /// the issuance whose instance key is `instanceKey`: the wallet always
+    /// asks ``walletAttestation(clientID:instanceKey:)`` for it first. A
+    /// provider that records its instance keys gives the Key Attestation
+    /// that key's status (the Wallet Provider protocol's `instance_key`),
+    /// so suspending or revoking the installation withdraws it too.
+    func keyAttestation(instanceKey: Data, keys: [Data], nonce: String) async throws -> String
 }
 
 // MARK: Adapters to gomobile's protocols
@@ -163,8 +177,15 @@ final class CredentialStoreAdapter: NSObject, MobileCredentialStoreProtocol, @un
 
     func get(_ id: String?) throws -> Data { try store.record(id: id ?? "") ?? Data() }
 
-    func list() throws -> Data {
-        let records = try store.records()
+    func list() throws -> Data { jsonArray(try store.records()) }
+
+    // prefixes is a comma-separated list; empty selects every ID.
+    func listPrefixed(_ prefixes: String?, excluding: Bool) throws -> Data {
+        let ps = (prefixes ?? "").split(separator: ",").map(String.init)
+        return jsonArray(try store.records { id in ps.contains { id.hasPrefix($0) } != excluding })
+    }
+
+    private func jsonArray(_ records: [Data]) -> Data {
         var out = Data("[".utf8)
         for (i, r) in records.enumerated() {
             if i > 0 { out.append(contentsOf: Data(",".utf8)) }
@@ -199,14 +220,15 @@ final class WalletProviderAdapter: NSObject, MobileWalletProviderProtocol, @unch
         return Data(try Self.wait { try await provider.walletAttestation(clientID: id, instanceKey: key) }.utf8)
     }
 
-    func keyAttestation(_ keysJWK: Data?, nonce: String?) throws -> Data {
+    func keyAttestation(_ instanceKeyJWK: Data?, keysJWK: Data?, nonce: String?) throws -> Data {
         guard let array = try JSONSerialization.jsonObject(with: keysJWK ?? Data()) as? [Any] else {
             throw StoreError("the keys to attest aren't a JSON array")
         }
         let keys = try array.map { try JSONSerialization.data(withJSONObject: $0) }
         let provider = self.provider
+        let instanceKey = instanceKeyJWK ?? Data()
         let n = nonce ?? ""
-        return Data(try Self.wait { try await provider.keyAttestation(keys: keys, nonce: n) }.utf8)
+        return Data(try Self.wait { try await provider.keyAttestation(instanceKey: instanceKey, keys: keys, nonce: n) }.utf8)
     }
 
     /// Runs `body` and blocks this (Go's) thread until it finishes. A

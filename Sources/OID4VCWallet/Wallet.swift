@@ -191,6 +191,23 @@ public struct WalletConfiguration: Codable, Sendable {
     /// Refuses plain `http` distribution points, and leaves them out of
     /// `crlDistributionPointsFromRoots`.
     public var crlRequireHTTPS: Bool
+    /// The largest status list `checkStatus` reads, in bytes; 0 means 1
+    /// MiB. Raise it for issuers whose lists are larger.
+    public var statusMaxBytes: Int
+    /// The largest mdoc identifier list `checkStatus` reads, in bytes; 0
+    /// means 4 MiB.
+    public var identifierListMaxBytes: Int
+    /// How long `checkStatus` uses a status or identifier list it fetched
+    /// before revalidating it, in seconds: 0 means 5 minutes, at most a
+    /// day, and never past the list's own `ttl` or `exp`. Longer means
+    /// fewer requests, and a revocation seen that much later.
+    public var statusCacheMaxAgeSeconds: Int
+    /// An absolute path, the app's own — under its Caches directory, say —
+    /// where `checkStatus` keeps the lists it verified across launches: a
+    /// launch then asks each list's server whether the list it kept is
+    /// current, a `304 Not Modified` rather than the list, and never uses
+    /// one the server hasn't confirmed. Empty keeps them in memory only.
+    public var statusCacheDir: String
 
     /// A trust role whose certificates can be checked for revocation.
     public enum RevocationRole: String, Codable, Sendable, CaseIterable {
@@ -265,7 +282,9 @@ public struct WalletConfiguration: Codable, Sendable {
                 acceptMDLSignerWithoutEKU: Bool = false,
                 crls: String = "", revocation: [RevocationRole] = [], crlIssuers: String = "",
                 noRevocationCheck: [RevocationRole] = [], crlDistributionPoints: [CRLDistributionPoint] = [],
-                crlDistributionPointsFromRoots: Bool = false, crlRequireHTTPS: Bool = false) {
+                crlDistributionPointsFromRoots: Bool = false, crlRequireHTTPS: Bool = false,
+                statusMaxBytes: Int = 0, identifierListMaxBytes: Int = 0, statusCacheMaxAgeSeconds: Int = 0,
+                statusCacheDir: String = "") {
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.issuerRoots = issuerRoots
@@ -305,6 +324,10 @@ public struct WalletConfiguration: Codable, Sendable {
         self.crlDistributionPoints = crlDistributionPoints
         self.crlDistributionPointsFromRoots = crlDistributionPointsFromRoots
         self.crlRequireHTTPS = crlRequireHTTPS
+        self.statusMaxBytes = statusMaxBytes
+        self.identifierListMaxBytes = identifierListMaxBytes
+        self.statusCacheMaxAgeSeconds = statusCacheMaxAgeSeconds
+        self.statusCacheDir = statusCacheDir
     }
 
     enum CodingKeys: String, CodingKey {
@@ -325,6 +348,8 @@ public struct WalletConfiguration: Codable, Sendable {
         case crls, revocation, crlIssuers = "crl_issuers", noRevocationCheck = "no_revocation_check"
         case crlDistributionPoints = "crl_distribution_points"
         case crlDistributionPointsFromRoots = "crl_distribution_points_from_roots", crlRequireHTTPS = "crl_require_https"
+        case statusMaxBytes = "status_max_bytes", identifierListMaxBytes = "identifier_list_max_bytes"
+        case statusCacheMaxAgeSeconds = "status_cache_max_age_seconds", statusCacheDir = "status_cache_dir"
     }
 
     /// Decodes a configuration, refusing a key it doesn't know: a
@@ -374,7 +399,11 @@ public struct WalletConfiguration: Codable, Sendable {
                   noRevocationCheck: try c.decodeIfPresent([RevocationRole].self, forKey: .noRevocationCheck) ?? [],
                   crlDistributionPoints: try c.decodeIfPresent([CRLDistributionPoint].self, forKey: .crlDistributionPoints) ?? [],
                   crlDistributionPointsFromRoots: try c.decodeIfPresent(Bool.self, forKey: .crlDistributionPointsFromRoots) ?? false,
-                  crlRequireHTTPS: try c.decodeIfPresent(Bool.self, forKey: .crlRequireHTTPS) ?? false)
+                  crlRequireHTTPS: try c.decodeIfPresent(Bool.self, forKey: .crlRequireHTTPS) ?? false,
+                  statusMaxBytes: try c.decodeIfPresent(Int.self, forKey: .statusMaxBytes) ?? 0,
+                  identifierListMaxBytes: try c.decodeIfPresent(Int.self, forKey: .identifierListMaxBytes) ?? 0,
+                  statusCacheMaxAgeSeconds: try c.decodeIfPresent(Int.self, forKey: .statusCacheMaxAgeSeconds) ?? 0,
+                  statusCacheDir: try c.decodeIfPresent(String.self, forKey: .statusCacheDir) ?? "")
     }
 
     /// The scheme of `redirectURI`: the callback scheme an
@@ -1320,8 +1349,52 @@ public final class MdocPresentation: @unchecked Sendable {
         /// The CBOR EncryptedResponse, for
         /// `ISO18013MobileDocumentResponse(responseData:)`.
         public let response: Data
-        /// Whether the copy presented had been seen by another Verifier.
+        /// Whether a copy presented had been seen by another Verifier: for
+        /// several documents, whether any was.
         public let linkable: Bool
+        /// The credentials presented with such a copy, by ID.
+        public let linkableCredentials: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case response, linkable
+            case linkableCredentials = "linkable_credentials"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            response = try c.decode(Data.self, forKey: .response)
+            linkable = try c.decode(Bool.self, forKey: .linkable)
+            linkableCredentials = try c.decodeIfPresent([String].self, forKey: .linkableCredentials) ?? []
+        }
+    }
+
+    /// One requested document to answer: number `document` of
+    /// `request.documents`, with the held mdoc `credentialID`, disclosing
+    /// exactly `elements`, each one that document requested.
+    public struct Answer: Sendable, Hashable {
+        public let document: Int
+        public let credentialID: String
+        public let elements: [Element]
+
+        /// An answer.
+        public init(document: Int, credentialID: String, elements: [Element]) {
+            self.document = document
+            self.credentialID = credentialID
+            self.elements = elements
+        }
+    }
+
+    /// `answers` as the gomobile layer takes them:
+    /// `[{"document", "credential_id", "elements"}]`.
+    static func answersJSON(_ answers: [Answer]) throws -> String {
+        struct AnswerJSON: Encodable {
+            let document: Int
+            let credentialID: String
+            let elements: [[String]]
+            enum CodingKeys: String, CodingKey { case document, credentialID = "credential_id", elements }
+        }
+        let out = answers.map { a in AnswerJSON(document: a.document, credentialID: a.credentialID, elements: a.elements.map { [$0.namespace, $0.identifier] }) }
+        return String(decoding: try JSONEncoder().encode(out), as: UTF8.self)
     }
 
     let handle: MobileMdocPresentation
@@ -1336,13 +1409,29 @@ public final class MdocPresentation: @unchecked Sendable {
     /// Presents the held mdoc `credentialID` for document number
     /// `document`, disclosing exactly `elements`, each one it requested.
     /// The holder key signs now, so a key store requiring user presence
-    /// prompts.
+    /// prompts. It is `respond(answers:)` with one answer.
     public func respond(document: Int, credentialID: String, elements: [Element]) async throws -> Response {
+        try await respond(answers: [Answer(document: document, credentialID: credentialID, elements: elements)])
+    }
+
+    /// Presents several of the request's documents in one
+    /// EncryptedResponse, each of `answers` as
+    /// `respond(document:credentialID:elements:)` presents one. A document
+    /// left out isn't in the response. No document may be answered twice,
+    /// nor one credential answer two. Each holder key signs now, in the
+    /// request's order; a `KeychainKeyStore` requiring user presence asks
+    /// the holder once for them all. On a `WalletError` — the prompt
+    /// cancelled, say — nothing is returned, and the request can be
+    /// answered again.
+    public func respond(answers: [Answer]) async throws -> Response {
         let p = handle
-        let pairs = elements.map { [$0.namespace, $0.identifier] }
-        let json = String(decoding: try JSONEncoder().encode(pairs), as: UTF8.self)
+        let json = try Self.answersJSON(answers)
+        // The shared prompt is scoped to the thread making the Go call,
+        // so it goes inside cancellable's background work.
         let out = try await OID4VC.cancellable { op in
-            try OID4VC.call { p.respond(op, document: document, credentialID: credentialID, elementsJSON: json, error: $0) }
+            try KeychainKeyStore.oneHolderPrompt {
+                try OID4VC.call { p.respondDocuments(op, answersJSON: json, error: $0) }
+            }
         }
         return try decode(Response.self, out)
     }
@@ -1353,8 +1442,11 @@ public final class MdocPresentation: @unchecked Sendable {
     /// `startMdocPresentation(requestData:origin:)` takes. iOS reports the
     /// origin as a URL, whose `absoluteString` can end in "/".
     public static func origin(of url: URL) -> String? {
-        guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), let scheme = c.scheme?.lowercased(),
-              let host = c.encodedHost ?? c.host, !host.isEmpty else { return nil }
+        guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), let scheme = c.scheme?.lowercased() else { return nil }
+        // `encodedHost` is iOS 16 and later; `percentEncodedHost` is its iOS 15 form.
+        let encodedHost: String?
+        if #available(iOS 16.0, macOS 13.0, *) { encodedHost = c.encodedHost } else { encodedHost = c.percentEncodedHost }
+        guard let host = encodedHost ?? c.host, !host.isEmpty else { return nil }
         let defaultPorts = ["https": 443, "http": 80]
         let defaultPort = defaultPorts[scheme]
         guard let port = c.port, port != defaultPort else { return "\(scheme)://\(host)" }
@@ -1383,6 +1475,10 @@ public final class InMemoryCredentialStore: CredentialStore, @unchecked Sendable
 
     public func records() throws -> [Data] {
         lock.withLock { stored.map(\.record) }
+    }
+
+    public func records(where isIncluded: (String) -> Bool) throws -> [Data] {
+        lock.withLock { stored.filter { isIncluded($0.id) }.map(\.record) }
     }
 
     public func delete(id: String) throws {

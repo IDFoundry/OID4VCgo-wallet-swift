@@ -10,20 +10,65 @@ extension MobileProximityReaderSession: @retroactive @unchecked Sendable {}
 /// How long an in-person session waits (ISO/IEC 18013-5 recommends at
 /// least 30 seconds from engagement to the request, §8.2.3, and 300
 /// seconds of inactivity before ending a session, §9.1.1.4).
+///
+/// Times are in seconds (`TimeInterval`) on every OS version. On iOS 16
+/// and later, `Duration` properties and an initializer do the same.
 public struct ProximityTimeouts: Sendable {
-    /// For the other device to connect, after the QR code is shown or scanned.
-    public var connect: Duration
-    /// For the reader's request, once connected.
-    public var request: Duration
-    /// For the holder to decide, or the holder's answer to arrive.
-    public var idle: Duration
+    /// Seconds to wait for the other device to connect, after the QR code
+    /// is shown or scanned.
+    public var connectSeconds: TimeInterval
+    /// Seconds to wait for the reader's request, once connected.
+    public var requestSeconds: TimeInterval
+    /// Seconds to wait for the holder to decide, or the holder's answer to
+    /// arrive.
+    public var idleSeconds: TimeInterval
 
-    /// Timeouts: by default 60 seconds to connect, 30 for the request, and 300
-    /// idle.
+    /// The default timeouts: 60 seconds to connect, 30 for the request, and
+    /// 300 idle. (Spelled out so `ProximityTimeouts()` isn't ambiguous
+    /// between the two initializers below on iOS 16 and later.)
+    public init() {
+        self.init(connectSeconds: 60, requestSeconds: 30, idleSeconds: 300)
+    }
+
+    /// Timeouts in seconds: by default 60 to connect, 30 for the request,
+    /// and 300 idle.
+    public init(connectSeconds: TimeInterval = 60, requestSeconds: TimeInterval = 30, idleSeconds: TimeInterval = 300) {
+        self.connectSeconds = connectSeconds
+        self.requestSeconds = requestSeconds
+        self.idleSeconds = idleSeconds
+    }
+
+    /// Timeouts: by default 60 seconds to connect, 30 for the request, and
+    /// 300 idle.
+    @available(iOS 16.0, macOS 13.0, *)
     public init(connect: Duration = .seconds(60), request: Duration = .seconds(30), idle: Duration = .seconds(300)) {
-        self.connect = connect
-        self.request = request
-        self.idle = idle
+        self.init(connectSeconds: connect.timeInterval, requestSeconds: request.timeInterval, idleSeconds: idle.timeInterval)
+    }
+
+    /// For the other device to connect, after the QR code is shown or scanned.
+    @available(iOS 16.0, macOS 13.0, *)
+    public var connect: Duration {
+        get { .seconds(connectSeconds) }
+        set { connectSeconds = newValue.timeInterval }
+    }
+    /// For the reader's request, once connected.
+    @available(iOS 16.0, macOS 13.0, *)
+    public var request: Duration {
+        get { .seconds(requestSeconds) }
+        set { requestSeconds = newValue.timeInterval }
+    }
+    /// For the holder to decide, or the holder's answer to arrive.
+    @available(iOS 16.0, macOS 13.0, *)
+    public var idle: Duration {
+        get { .seconds(idleSeconds) }
+        set { idleSeconds = newValue.timeInterval }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private extension Duration {
+    var timeInterval: TimeInterval {
+        Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 }
 
@@ -276,9 +321,9 @@ public final class ProximityPresentation: @unchecked Sendable {
 
     private func run() async {
         do {
-            try await within(timeouts.connect, "no reader connected") { try await self.transport.connect() }
+            try await within(timeouts.connectSeconds, "no reader connected") { try await self.transport.connect() }
             broadcast.update(.connected) { if case .waitingForReader = $0 { true } else { false } }
-            let first = try await within(timeouts.request, "the reader sent no request") { try await self.transport.receive() }
+            let first = try await within(timeouts.requestSeconds, "the reader sent no request") { try await self.transport.receive() }
             guard try await handleMessage(first) == "request" else { return }
             let request = try decode(RequestJSON.self, handle.request()).request
             guard broadcast.update(.requestReceived(request), if: { if case .connected = $0 { true } else { false } }) else { return }
@@ -286,7 +331,7 @@ public final class ProximityPresentation: @unchecked Sendable {
             // session. The idle timeout runs only while the request waits.
             while !state.isFinal {
                 do {
-                    let next = try await withTimeout(timeouts.idle) { try await self.transport.receive() }
+                    let next = try await withTimeout(timeouts.idleSeconds) { try await self.transport.receive() }
                     _ = try await handleMessage(next)
                 } catch is ProximityTimeout {
                     if case .requestReceived = state {
@@ -329,22 +374,55 @@ public final class ProximityPresentation: @unchecked Sendable {
     /// signs now, so a key store requiring user presence prompts. It
     /// returns whether the copy presented had been seen by another
     /// Verifier. On a `WalletError` nothing was sent and the request
-    /// stands: try again, or `decline`.
+    /// stands: try again, or `decline`. It is `respond(answers:)` with
+    /// one answer.
     @discardableResult
     public func respond(document: Int, credentialID: String, elements: [MdocPresentation.Element]) async throws -> Bool {
+        try await respond(answers: [MdocPresentation.Answer(document: document, credentialID: credentialID, elements: elements)]).linkable
+    }
+
+    /// What `respond(answers:)` presented.
+    public struct Responded: Sendable {
+        /// Whether any copy presented had been seen by another Verifier.
+        public let linkable: Bool
+        /// The credentials presented with such a copy, by ID.
+        public let linkableCredentials: [String]
+    }
+
+    /// Presents several of the request's documents in one response, each
+    /// of `answers` as `respond(document:credentialID:elements:)` presents
+    /// one, and sends it, which ends the session. A document left out
+    /// isn't in the response: the reader may ask for more than the holder
+    /// shares. No document may be answered twice, nor one credential
+    /// answer two. Each holder key signs now, in the request's order; a
+    /// `KeychainKeyStore` requiring user presence asks the holder once for
+    /// them all (`KeychainKeyStore.Options.holderUserPresence`). On a
+    /// `WalletError` — the prompt cancelled, say — nothing was sent and
+    /// the request stands: try again, or `decline`.
+    @discardableResult
+    public func respond(answers: [MdocPresentation.Answer]) async throws -> Responded {
         guard case .requestReceived(let request) = state,
               broadcast.update(.responding, if: { if case .requestReceived = $0 { true } else { false } }) else {
             throw WalletError(code: .wrongStep, message: "no request to answer")
         }
-        struct Responded: Decodable { let send: Data; let linkable: Bool }
+        struct RespondedJSON: Decodable {
+            let send: Data
+            let linkable: Bool
+            let linkableCredentials: [String]?
+            enum CodingKeys: String, CodingKey { case send, linkable, linkableCredentials = "linkable_credentials" }
+        }
         let p = handle
-        let pairs = String(decoding: try JSONEncoder().encode(elements.map { [$0.namespace, $0.identifier] }), as: UTF8.self)
-        let answer: Responded
+        let answer: RespondedJSON
         do {
+            let answersJSON = try MdocPresentation.answersJSON(answers)
+            // The shared prompt is scoped to the thread making the Go
+            // call, so it goes inside cancellable's background work.
             let json = try await OID4VC.cancellable { op in
-                try OID4VC.call { p.respond(op, document: document, credentialID: credentialID, elementsJSON: pairs, error: $0) }
+                try KeychainKeyStore.oneHolderPrompt {
+                    try OID4VC.call { p.respondDocuments(op, answersJSON: answersJSON, error: $0) }
+                }
             }
-            answer = try decode(Responded.self, json)
+            answer = try decode(RespondedJSON.self, json)
         } catch {
             broadcast.update(.requestReceived(request)) { if case .responding = $0 { true } else { false } }
             throw error
@@ -362,7 +440,7 @@ public final class ProximityPresentation: @unchecked Sendable {
             throw error
         }
         finish(.presented(linkable: answer.linkable), letReaderEnd: true)
-        return answer.linkable
+        return Responded(linkable: answer.linkable, linkableCredentials: answer.linkableCredentials ?? [])
     }
 
     /// Declines the request, or ends the session before one: the reader
@@ -383,7 +461,7 @@ public final class ProximityPresentation: @unchecked Sendable {
         guard !state.isFinal else { return }
         ending.withLock { $0 = .cancelled }
         Task.detached { [self] in
-            _ = try? await withTimeout(.seconds(2)) { await self.sendTermination() }
+            _ = try? await withTimeout(2) { await self.sendTermination() }
             finish(.cancelled)
         }
     }
@@ -392,7 +470,7 @@ public final class ProximityPresentation: @unchecked Sendable {
     /// reader disconnecting on the termination sent then doesn't end it
     /// as anything else.
     private enum Ending { case declined, cancelled }
-    private let ending = OSAllocatedUnfairLock<Ending?>(initialState: nil)
+    private let ending = Locked<Ending?>(initialState: nil)
 
     /// Sends status 20, if a reader is connected.
     private func sendTermination() async {
@@ -415,13 +493,13 @@ public final class ProximityPresentation: @unchecked Sendable {
         Task.detached {
             if letReaderEnd {
                 // Until the reader disconnects or ends: receive throws then.
-                _ = try? await withTimeout(.seconds(5)) { while true { _ = try await transport.receive() } }
+                _ = try? await withTimeout(5) { while true { _ = try await transport.receive() } }
             }
             transport.close()
         }
     }
 
-    private func within<T: Sendable>(_ timeout: Duration, _ what: String, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+    private func within<T: Sendable>(_ timeout: TimeInterval, _ what: String, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
         do {
             return try await withTimeout(timeout, body)
         } catch is ProximityTimeout {
@@ -578,6 +656,19 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
     public var crlDistributionPointsFromRoots: Bool
     /// Refuses plain `http` distribution points.
     public var crlRequireHTTPS: Bool
+    /// The largest status list `checkStatus` reads, in bytes; 0 means 1
+    /// MiB.
+    public var statusMaxBytes: Int
+    /// The largest identifier list `checkStatus` reads, in bytes; 0 means
+    /// 4 MiB.
+    public var identifierListMaxBytes: Int
+    /// How long `checkStatus` uses a status or identifier list it fetched
+    /// before revalidating it, in seconds, as
+    /// ``WalletConfiguration/statusCacheMaxAgeSeconds``.
+    public var statusCacheMaxAgeSeconds: Int
+    /// Where `checkStatus` keeps lists across launches, as
+    /// ``WalletConfiguration/statusCacheDir``.
+    public var statusCacheDir: String
     /// The roles that decline checking revocation, for where something
     /// else stands in for it. Outside `development`, each role must be in
     /// `revocation` or here; a role can't be in both.
@@ -641,7 +732,9 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
                 crlIssuers: String = "", noRevocationCheck: [RevocationRole] = [], anyIssuerForAnyType: Bool = false,
                 statusCheck: StatusCheck? = nil, development: Bool = false,
                 crlDistributionPoints: [CRLDistributionPoint] = [], crlDistributionPointsFromRoots: Bool = false,
-                crlRequireHTTPS: Bool = false, developmentRoots: String = "") {
+                crlRequireHTTPS: Bool = false, developmentRoots: String = "",
+                statusMaxBytes: Int = 0, identifierListMaxBytes: Int = 0, statusCacheMaxAgeSeconds: Int = 0,
+                statusCacheDir: String = "") {
         self.issuerRoots = issuerRoots
         self.readerKeyID = readerKeyID
         self.readerChain = readerChain
@@ -660,6 +753,10 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         self.crlDistributionPointsFromRoots = crlDistributionPointsFromRoots
         self.crlRequireHTTPS = crlRequireHTTPS
         self.developmentRoots = developmentRoots
+        self.statusMaxBytes = statusMaxBytes
+        self.identifierListMaxBytes = identifierListMaxBytes
+        self.statusCacheMaxAgeSeconds = statusCacheMaxAgeSeconds
+        self.statusCacheDir = statusCacheDir
     }
 
     enum CodingKeys: String, CodingKey {
@@ -673,6 +770,8 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         case crlDistributionPoints = "crl_distribution_points"
         case crlDistributionPointsFromRoots = "crl_distribution_points_from_roots", crlRequireHTTPS = "crl_require_https"
         case developmentRoots = "development_roots"
+        case statusMaxBytes = "status_max_bytes", identifierListMaxBytes = "identifier_list_max_bytes"
+        case statusCacheMaxAgeSeconds = "status_cache_max_age_seconds", statusCacheDir = "status_cache_dir"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -695,6 +794,10 @@ public struct ProximityReaderConfiguration: Codable, Sendable {
         crlDistributionPointsFromRoots = try c.decodeIfPresent(Bool.self, forKey: .crlDistributionPointsFromRoots) ?? false
         crlRequireHTTPS = try c.decodeIfPresent(Bool.self, forKey: .crlRequireHTTPS) ?? false
         developmentRoots = try c.decodeIfPresent(String.self, forKey: .developmentRoots) ?? ""
+        statusMaxBytes = try c.decodeIfPresent(Int.self, forKey: .statusMaxBytes) ?? 0
+        identifierListMaxBytes = try c.decodeIfPresent(Int.self, forKey: .identifierListMaxBytes) ?? 0
+        statusCacheMaxAgeSeconds = try c.decodeIfPresent(Int.self, forKey: .statusCacheMaxAgeSeconds) ?? 0
+        statusCacheDir = try c.decodeIfPresent(String.self, forKey: .statusCacheDir) ?? ""
     }
 }
 
@@ -725,7 +828,33 @@ public final class ProximityReader: @unchecked Sendable {
     /// code it can't use is `WalletError` `.invalidInput`.
     public func start(qrCode: String, docType: String, elements: [String: [String]],
                       timeouts: ProximityTimeouts = ProximityTimeouts()) throws -> ProximityReaderSession {
-        try start(qrCode: qrCode, docType: docType, elements: elements, timeouts: timeouts) { e in
+        try start(qrCode: qrCode, documents: [DocumentRequest(docType: docType, elements: elements)], timeouts: timeouts)
+    }
+
+    /// One document a reader asks for: its `docType`, and its `elements`
+    /// (namespace → identifiers).
+    public struct DocumentRequest: Sendable, Encodable {
+        public let docType: String
+        public let elements: [String: [String]]
+
+        /// A document request.
+        public init(docType: String, elements: [String: [String]]) {
+            self.docType = docType
+            self.elements = elements
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case docType = "doctype", elements
+        }
+    }
+
+    /// `start(qrCode:docType:elements:timeouts:)` asking for several
+    /// `documents` at once, each of a different type, at most eight. The
+    /// holder may answer any of them: `ProximityReaderSession.documents`
+    /// has each one it did, so check each one needed came back.
+    public func start(qrCode: String, documents: [DocumentRequest],
+                      timeouts: ProximityTimeouts = ProximityTimeouts()) throws -> ProximityReaderSession {
+        try start(qrCode: qrCode, documents: documents, timeouts: timeouts) { e in
             if e.bleMode == "central_client" {
                 GattServerTransport(serviceUUID: e.uuid, characteristics: .centralClient, ident: e.ident)
             } else {
@@ -757,9 +886,14 @@ public final class ProximityReader: @unchecked Sendable {
 
     func start(qrCode: String, docType: String, elements: [String: [String]], timeouts: ProximityTimeouts,
                transport: (ReaderEngagement) -> any ProximityTransport) throws -> ProximityReaderSession {
+        try start(qrCode: qrCode, documents: [DocumentRequest(docType: docType, elements: elements)], timeouts: timeouts, transport: transport)
+    }
+
+    func start(qrCode: String, documents: [DocumentRequest], timeouts: ProximityTimeouts,
+               transport: (ReaderEngagement) -> any ProximityTransport) throws -> ProximityReaderSession {
         let reader = handle
         let session = try OID4VC.wrap { try reader.start(qrCode) }
-        return try ProximityReaderSession(session, docType: docType, elements: elements, timeouts: timeouts, transport: transport)
+        return try ProximityReaderSession(session, documents: documents, timeouts: timeouts, transport: transport)
     }
 }
 
@@ -810,10 +944,15 @@ public final class ProximityReaderSession: @unchecked Sendable {
     private let handle: MobileProximityReaderSession
     private let transport: any ProximityTransport
     private let timeouts: ProximityTimeouts
-    private let docType: String
-    private let elementsJSON: String
+    private let documentRequests: [ProximityReader.DocumentRequest]
     private let broadcast = StateBroadcast<State>(.connecting)
     private var task: Task<Void, Never>?
+    private let verifiedDocuments = Locked<[VerifiedMdoc]>(initialState: [])
+
+    /// Every verified mdoc, in the response's order, once the session is
+    /// `.verified` (whose mdoc is the first): for a request of several
+    /// documents, the ones the holder answered. Empty before.
+    public var documents: [VerifiedMdoc] { verifiedDocuments.withLock { $0 } }
 
     /// Whether requests carry reader authentication.
     public let signed: Bool
@@ -830,12 +969,11 @@ public final class ProximityReaderSession: @unchecked Sendable {
     /// The current state, then each change.
     public var states: AsyncStream<State> { broadcast.stream() }
 
-    init(_ handle: MobileProximityReaderSession, docType: String, elements: [String: [String]], timeouts: ProximityTimeouts,
+    init(_ handle: MobileProximityReaderSession, documents: [ProximityReader.DocumentRequest], timeouts: ProximityTimeouts,
          transport: (ReaderEngagement) -> any ProximityTransport) throws {
         let e = try decode(ReaderEngagement.self, handle.engagement())
         self.handle = handle
-        self.docType = docType
-        self.elementsJSON = String(decoding: try JSONEncoder().encode(elements), as: UTF8.self)
+        self.documentRequests = documents
         self.timeouts = timeouts
         self.signed = e.signed
         self.checksStatus = e.checkStatus ?? false
@@ -850,25 +988,32 @@ public final class ProximityReaderSession: @unchecked Sendable {
     private func run() async {
         do {
             do {
-                try await withTimeout(timeouts.connect) { try await self.transport.connect() }
+                try await withTimeout(timeouts.connectSeconds) { try await self.transport.connect() }
             } catch is ProximityTimeout {
                 throw ProximityError(.timedOut, "the holder's device wasn't found")
             }
             let s = handle
-            let (docType, elementsJSON) = (self.docType, self.elementsJSON)
-            let json = try await OID4VC.offMain { try OID4VC.call { s.request(docType, elementsJSON: elementsJSON, error: $0) } }
+            let json: String
+            if documentRequests.count == 1 {
+                let docType = documentRequests[0].docType
+                let elementsJSON = String(decoding: try JSONEncoder().encode(documentRequests[0].elements), as: UTF8.self)
+                json = try await OID4VC.offMain { try OID4VC.call { s.request(docType, elementsJSON: elementsJSON, error: $0) } }
+            } else {
+                let requestsJSON = String(decoding: try JSONEncoder().encode(documentRequests), as: UTF8.self)
+                json = try await OID4VC.offMain { try OID4VC.call { s.requestDocuments(requestsJSON, error: $0) } }
+            }
             try await transport.send(try decode(SendJSON.self, json).send)
             broadcast.update(.waitingForResponse) { if case .connecting = $0 { true } else { false } }
             let answer: Data
             do {
-                answer = try await withTimeout(timeouts.idle) { try await self.transport.receive() }
+                answer = try await withTimeout(timeouts.idleSeconds) { try await self.transport.receive() }
             } catch is ProximityTimeout {
                 throw ProximityError(.timedOut, "the holder didn't respond in time")
             }
             let event = try decode(ReaderEventJSON.self, handle.handleMessage(answer))
             if let send = event.send { try? await transport.send(send) }
             if event.event == "verified", let v = event.verified {
-                finish(await settled(v.mdoc))
+                finish(await settled((event.documents ?? [v]).map(\.mdoc)))
             } else if event.reason == "declined" {
                 finish(.declined)
             } else {
@@ -894,20 +1039,30 @@ public final class ProximityReaderSession: @unchecked Sendable {
     /// (`WalletError` `.documentNotValid`, its `protocolError` the status
     /// as the list says it), or the check failed. The connection is
     /// closed first: the status list is fetched over the network.
-    private func settled(_ mdoc: VerifiedMdoc) async -> State {
-        guard checksStatus else { return .verified(mdoc) }
+    private func settled(_ mdocs: [VerifiedMdoc]) async -> State {
+        guard checksStatus else {
+            verifiedDocuments.withLock { $0 = mdocs }
+            return .verified(mdocs[0])
+        }
         transport.close()
         do {
             let s = handle
             let json = try await OID4VC.cancellable { op in try OID4VC.call { s.checkStatus(op, error: $0) } }
-            let text = try decode(StatusJSON.self, json).status
+            let checkedStatus = try decode(StatusJSON.self, json)
+            let text = checkedStatus.status
             let status = MdocStatus(text)
             guard status == .valid || status == .noStatus else {
                 return .failed(WalletError(code: .documentNotValid, protocolError: text, message: "the document's revocation status is \(text)"))
             }
-            var checked = mdoc
-            checked.status = status
-            return .verified(checked)
+            // Each document's own status; one alone has the combined one.
+            let each = mdocs.enumerated().map { i, mdoc in
+                var checked = mdoc
+                let statuses = checkedStatus.statuses ?? []
+                checked.status = i < statuses.count ? MdocStatus(statuses[i]) : status
+                return checked
+            }
+            verifiedDocuments.withLock { $0 = each }
+            return .verified(each[0])
         } catch is CancellationError {
             return .cancelled
         } catch let e as WalletError {
@@ -922,14 +1077,14 @@ public final class ProximityReaderSession: @unchecked Sendable {
         guard !state.isFinal else { return }
         cancelling.withLock { $0 = true }
         Task.detached { [self] in
-            _ = try? await withTimeout(.seconds(2)) { await self.terminate() }
+            _ = try? await withTimeout(2) { await self.terminate() }
             finish(.cancelled)
         }
     }
 
     /// Set by cancel: the holder disconnecting on its termination
     /// doesn't end the session as a failure.
-    private let cancelling = OSAllocatedUnfairLock(initialState: false)
+    private let cancelling = Locked(initialState: false)
 
     private func terminate() async {
         guard let message = try? decode(SendJSON.self, handle.terminate()).send else { return }
@@ -959,7 +1114,10 @@ public final class ProximityReaderSession: @unchecked Sendable {
         return MdocStatus(try decode(StatusJSON.self, json).status)
     }
 
-    struct StatusJSON: Decodable { let status: String }
+    struct StatusJSON: Decodable {
+        let status: String
+        let statuses: [String]?
+    }
 }
 
 /// A verified mdoc's revocation status, as
@@ -1054,6 +1212,7 @@ public struct VerifiedMdoc: Sendable {
 struct ReaderEventJSON: Decodable {
     let event: String
     let verified: VerifiedJSON?
+    let documents: [VerifiedJSON]?
     let send: Data?
     let reason: String?
     let error: String?
