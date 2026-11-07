@@ -51,6 +51,14 @@ loopback addresses are refused. The rest is the app's.
 
 ### The Wallet Provider
 
+> Important: Not yet available for iOS. OID4VCgo's Wallet Provider
+> (`walletprovider`) verifies Android Key Attestation evidence but has
+> no App Attest verifier yet, and this library has no client for the
+> provider's protocol (Kotlin's `HttpWalletProvider` is one). Until
+> they ship, implement ``WalletProvider`` against a provider of your
+> own, with an App Attest verifier of your own on the server — or ship
+> without attestations, for issuers that don't ask for them.
+
 Issuers trust the wallet because its Wallet Provider attests it. A
 production Wallet Provider should attest a wallet and its keys only
 after checking App Attest evidence that it's talking to your genuine
@@ -120,7 +128,13 @@ along with its Wallet Attestations (the Wallet Provider protocol's
   nextUpdate: fetch fresh ones in the background and hand them over
   with ``Wallet/setCRLs(_:)``, which replaces them all (empty text
   removes them) and throws `invalidInput`, keeping the old lists, for
-  anything that isn't a CRL. A certificate pinned in the roots, such as
+  anything that isn't a CRL, a CA's list older than the one held, or a
+  list naming a CA your configuration has (in `crlIssuers`, a
+  distribution point's issuer, or a CA certificate in the roots) that
+  the CA didn't sign. Only lists such a CA signed are held to the
+  older-list rule, so give an intermediate CA's certificate in
+  ``WalletConfiguration/crlIssuers`` to have its lists checked too. A
+  certificate pinned in the roots, such as
   a Verifier's leaf in ``WalletConfiguration/verifierRoots``, is checked
   against its CA's CRL: give that CA's certificate in
   ``WalletConfiguration/crlIssuers``, or it's refused. A
@@ -306,6 +320,12 @@ ecosystem, and record why:
 Ship the release build of `Mobile`, which the package links by default.
 Refuse to run on the test build, which carries an in-process issuer and
 Verifier: check ``OID4VC/isTestBuild`` at launch.
+
+Check the framework you ship: Swift Package Manager checks
+`Mobile.xcframework.zip` against the checksum in the release's
+`Package.swift`; check that against the release's `SHA256SUMS`, and its
+provenance with `gh attestation verify Mobile.xcframework.zip --repo
+IDFoundry/OID4VCgo`.
 
 ### A document provider extension
 
