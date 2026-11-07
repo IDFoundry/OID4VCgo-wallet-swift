@@ -71,6 +71,13 @@ func makeProductionWalletProvider() throws -> HttpWalletProvider {
 }
 ```
 
+Every provider over that registry file in the process takes turns with
+the others, so the app may make a new one whenever it rebuilds its
+wallet. The registration key goes in the app's default Keychain access
+group, the first of its `keychain-access-groups` entitlement: keep a
+group only the app has first, and list one it shares with an extension
+after it (``HttpWalletProvider/registrationKeyStore()``).
+
 Add the App Attest capability to the app, whose
 `com.apple.developer.devicecheck.appattest-environment` entitlement
 names the environment its keys are made in: `development` while you
@@ -312,11 +319,17 @@ ecosystem, and record why:
   downloading it again, which matters for lists of millions of entries;
   a list the server doesn't confirm is never used. Left nil, the lists
   are kept in `oid4vcwallet-status-lists` in the app's Caches
-  directory, and in memory only when the Keychain key authenticating
-  them can't be had (before the device's first unlock) and on macOS.
-  Set a directory of the app's own to keep them elsewhere (a failure to
-  get its key then fails the wallet), or `""` to keep them in memory
-  only.
+  directory, made with complete file protection as the credentials
+  are, and in memory only when the Keychain key authenticating them
+  can't be had (before the device's first unlock), when the directory
+  can't be made, and on macOS. The directory shows whoever can read it
+  which status lists the wallet checks (their URIs, so the issuers of
+  its credentials, not which entries), the lists, and when each was
+  last checked; under complete protection, a background check while the
+  device is locked can't read or keep lists there, and downloads them
+  instead. Set a directory of the app's own to keep them elsewhere,
+  with the protection you give it (a failure to get its key, or to make
+  it, then fails the wallet), or `""` to keep them in memory only.
 - ``WalletConfiguration/mdocIssuerRoots`` and
   ``WalletConfiguration/mdocIssuerRootsByDocType``: the IACAs mdocs, or
   each document type, must chain to, instead of
