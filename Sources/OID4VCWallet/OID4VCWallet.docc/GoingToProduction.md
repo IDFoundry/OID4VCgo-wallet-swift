@@ -51,13 +51,37 @@ loopback addresses are refused. The rest is the app's.
 
 ### The Wallet Provider
 
-> Important: Not yet available for iOS. OID4VCgo's Wallet Provider
-> (`walletprovider`) verifies Android Key Attestation evidence but has
-> no App Attest verifier yet, and this library has no client for the
-> provider's protocol (Kotlin's `HttpWalletProvider` is one). Until
-> they ship, implement ``WalletProvider`` against a provider of your
-> own, with an App Attest verifier of your own on the server — or ship
-> without attestations, for issuers that don't ask for them.
+For a Wallet Provider built with OID4VCgo's `walletprovider`,
+``HttpWalletProvider`` is the client: it speaks the provider's
+protocol (`mobile/WALLET_PROVIDER.md`) with App Attest evidence, which
+the provider verifies (`walletprovider/appattest`). It registers the
+installation once, at its first Wallet Attestation — a registration
+key in a Keychain prefix of its own (``HttpWalletProvider/registrationKeyStore()``)
+and an App Attest key Apple attests — and asserts with the App Attest
+key over each new instance key and each Key Attestation's holder keys.
+Give it a registry that survives launches:
+
+```swift
+import Foundation
+import OID4VCWallet
+
+func makeProductionWalletProvider() throws -> HttpWalletProvider {
+    try HttpWalletProvider(baseURL: URL(string: "https://wallet-provider.example.com")!,
+                           instances: FileInstanceRegistry.standard())
+}
+```
+
+Add the App Attest capability to the app, whose
+`com.apple.developer.devicecheck.appattest-environment` entitlement
+names the environment its keys are made in: `development` while you
+develop, against a provider that accepts it
+(`appattest.Verifier.AllowDevelopment`), and `production` — what a
+distributed build gets — for release, against a provider that doesn't.
+App Attest isn't available in the Simulator or on some older devices:
+there the wallet can't register, and every attestation fails as
+``WalletError/Code/platform``. Test on a device. An app restored from a
+backup or reinstalled has lost its App Attest key: the client
+registers it again, as a new instance.
 
 Issuers trust the wallet because its Wallet Provider attests it. A
 production Wallet Provider should attest a wallet and its keys only
@@ -282,12 +306,17 @@ ecosystem, and record why:
   list (1 MiB) and identifier list (4 MiB) `checkStatus` reads. A
   larger list fails every check of the credentials on it: raise them
   only for issuers whose lists are larger.
-- ``WalletConfiguration/statusCacheDir``: a directory of the app's
-  own, under its Caches directory, where `checkStatus` keeps the lists
-  it verified across launches. Each launch then revalidates a kept
-  list with its server (a `304 Not Modified`) instead of downloading it
-  again, which matters for lists of millions of entries; a list the
-  server doesn't confirm is never used.
+- ``WalletConfiguration/statusCacheDir``: where `checkStatus` keeps
+  the lists it verified across launches. Each launch then revalidates a
+  kept list with its server (a `304 Not Modified`) instead of
+  downloading it again, which matters for lists of millions of entries;
+  a list the server doesn't confirm is never used. Left nil, the lists
+  are kept in `oid4vcwallet-status-lists` in the app's Caches
+  directory, and in memory only when the Keychain key authenticating
+  them can't be had (before the device's first unlock) and on macOS.
+  Set a directory of the app's own to keep them elsewhere (a failure to
+  get its key then fails the wallet), or `""` to keep them in memory
+  only.
 - ``WalletConfiguration/mdocIssuerRoots`` and
   ``WalletConfiguration/mdocIssuerRootsByDocType``: the IACAs mdocs, or
   each document type, must chain to, instead of

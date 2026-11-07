@@ -187,8 +187,9 @@ is a complete, working app on this package to compare against.
 
 - <doc:GoingToProduction> is done: ``WalletConfiguration/development``
   isn't set, nor ``ProximityReaderConfiguration/development``, and the
-  Wallet Provider checks App Attest evidence. OID4VCgo's own Wallet
-  Provider can't yet (see "The Wallet Provider" there): that check is
-  your own provider's until it can.
+  Wallet Provider checks App Attest evidence, as OID4VCgo's
+  (`walletprovider/appattest`) does, with ``HttpWalletProvider`` as its
+  client, and the app's App Attest entitlement is `production` (see
+  "The Wallet Provider" there).
 - Interop beyond your own app: test your holder against at least one
   independent reader, and your reader against an independent holder.
