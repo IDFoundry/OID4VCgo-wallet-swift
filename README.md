@@ -18,19 +18,28 @@ storage and the UI:
 - **Storage:** `FileCredentialStore` uses complete file protection and
   is excluded from backup. Its writes lock a file in its directory, so
   an app and its extension can share one in an App Group.
-- **Wallet Provider:** you implement `WalletProvider`, which attests the
-  wallet, for issuers that ask for attestations, as HAIP issuers do; pass
-  `nil` for issuers that don't. Issuance follows each issuer's metadata,
-  or with `issuanceProfile: .haip` refuses issuers outside HAIP.
+- **Wallet Provider:** your backend attests the wallet, for issuers
+  that ask for attestations, as HAIP issuers do. `HttpWalletProvider`
+  is the client of one built on OID4VCgo's `walletprovider`, with App
+  Attest evidence; for another backend you implement `WalletProvider`,
+  making the checks the Getting started article lists. Pass `nil` for
+  issuers that don't ask. Issuance follows each issuer's metadata, or
+  with `issuanceProfile: .haip` refuses issuers outside HAIP.
 
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.34.1")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.35.0")
 ```
 
-In-person presentation needs `NSBluetoothAlwaysUsageDescription` in your
-app's Info.plist.
+Then, in your app's Info.plist and capabilities:
+- `NSFaceIDUsageDescription`, as holder keys ask for Face ID at each
+  use; without it, iOS asks for the passcode instead.
+- A URL type (`CFBundleURLTypes`) for your redirect URI's private-use
+  scheme (`com.example.wallet`), registered with issuers, and for the
+  `openid-credential-offer` and `openid4vp` schemes your app opens.
+- The App Attest capability, for `HttpWalletProvider`.
+- `NSBluetoothAlwaysUsageDescription`, for in-person presentation.
 
 ## Use
 
@@ -38,34 +47,39 @@ app's Info.plist.
 import Foundation
 import OID4VCWallet
 
-// Your Wallet Provider's backend, which attests the wallet and its keys
-// after checking App Attest evidence.
-struct MyWalletProvider: WalletProvider {
-    func walletAttestation(clientID: String, instanceKey: Data) async throws -> String {
-        fatalError("call your Wallet Provider")
-    }
-    func keyAttestation(instanceKey: Data, keys: [Data], nonce: String) async throws -> String {
-        fatalError("call your Wallet Provider")
-    }
-}
-
-func example(offerLink: String, requestLink: String, pin: String) async throws {
+// Your Wallet Provider, built on OID4VCgo's walletprovider, which attests
+// the wallet and its keys after checking App Attest evidence. A backend
+// of your own needs a WalletProvider of your own: the Getting started
+// article lists the checks it makes.
+func makeWallet(issuerRoots: String, verifierRoots: String, crls: String) throws -> (Wallet, KeychainKeyStore, HttpWalletProvider) {
     let keys = KeychainKeyStore()                  // Secure Enclave keys
+    let provider = try HttpWalletProvider(baseURL: URL(string: "https://provider.example.com/wp")!,
+                                          instances: FileInstanceRegistry.standard())
     let wallet = try Wallet(
-        configuration: WalletConfiguration(clientID: "my-wallet", redirectURI: "com.example.wallet:/callback"),
+        configuration: WalletConfiguration(
+            clientID: "my-wallet",
+            redirectURI: "com.example.wallet:/callback",  // a URL scheme in your Info.plist
+            issuerRoots: issuerRoots,                      // PEM: the issuers you trust
+            verifierRoots: verifierRoots,                  // PEM: the Verifiers you answer
+            crls: crls,
+            revocation: [.issuer, .status, .verifier]),
         keyStore: keys,
         credentialStore: try FileCredentialStore.standard(),
-        provider: MyWalletProvider())
-    _ = try await wallet.sweepOrphanedKeys(in: keys)   // at launch
+        provider: provider)
+    return (wallet, keys, provider)
+}
 
+// signIn opens the issuer's page in an ASWebAuthenticationSession and
+// returns the URL it redirects back to.
+func example(wallet: Wallet, offerLink: String, requestLink: String, pin: String,
+             signIn: (URL) async throws -> URL) async throws {
     // Receive: an openid-credential-offer:// link.
     let issuance = try await wallet.startIssuance(offer: offerLink)
     if issuance.offer.grant == .preAuthorizedCode {
-        try await issuance.redeemPreAuthorizedCode(pin: pin)
+        try await issuance.redeemPreAuthorizedCode(pin: issuance.offer.txCode == nil ? "" : pin)
     } else {
         let url = try await issuance.beginAuthorization()
-        // Open url in an ASWebAuthenticationSession, then:
-        let redirect: URL = url
+        let redirect = try await signIn(url)
         try await issuance.completeAuthorization(redirect: redirect)
     }
     let received = try await issuance.requestCredentials()
@@ -80,6 +94,13 @@ func example(offerLink: String, requestLink: String, pin: String) async throws {
     let disclosed = try await presentation.preview(selection: selection)   // show the holder
     _ = disclosed
     _ = try await presentation.respond(selection: selection)              // Face ID here
+}
+
+// At launch, before any issuance: delete keys an interrupted issuance or
+// registration left behind.
+func atLaunch(wallet: Wallet, keys: KeychainKeyStore, provider: HttpWalletProvider) async throws {
+    try await wallet.sweepOrphanedKeys(in: keys)
+    try await provider.sweepOrphanedRegistrationKeys()
 }
 
 func handle(_ error: Error) -> String {
@@ -97,9 +118,9 @@ Errors are `WalletError`s. Each has:
 
 ## Documentation
 
-- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.34.1/documentation/oid4vcwallet/): getting started, an article
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.35.0/documentation/oid4vcwallet/): getting started, an article
   for each task, and the API reference.
-- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.34.1/documentation/oid4vcwallet/integrationchecklist): every step
+- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.35.0/documentation/oid4vcwallet/integrationchecklist): every step
   and rule in order, each with how to check it.
 - What's new: each [release](https://github.com/IDFoundry/OID4VCgo-wallet-swift/releases)'s notes.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
@@ -113,7 +134,7 @@ Errors are `WalletError`s. Each has:
 ## For coding assistants
 
 Integrating this package for someone? Follow
-[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.34.1/documentation/oid4vcwallet/integrationchecklist), and read the
+[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.35.0/documentation/oid4vcwallet/integrationchecklist), and read the
 documentation's Getting started article, then the article for each
 feature, before writing code. Use only the public API those name: never the `Mobile` framework's
 generated types directly, and don't reimplement the protocols or the

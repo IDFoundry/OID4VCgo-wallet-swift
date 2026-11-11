@@ -21,13 +21,16 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
         /// An argument, a link or the configuration is malformed.
         public static let invalidInput = Code(rawValue: MobileCodeInvalidInput)
         /// A key store, credential store or Wallet Provider call failed; its
-        /// message follows.
+        /// message follows. For the Wallet Provider refusing,
+        /// `WalletError.protocolError` is its protocol's error code, such
+        /// as `instance_revoked`.
         public static let platform = Code(rawValue: MobileCodePlatform)
         /// A request couldn't be made, got no answer, or timed out. Retryable.
         public static let network = Code(rawValue: MobileCodeNetwork)
         /// The service answered with HTTP 5xx or 429. Retryable later.
         public static let unavailable = Code(rawValue: MobileCodeUnavailable)
-        /// The calling task was cancelled.
+        /// The calling task was cancelled, or the holder dismissed a
+        /// holder key's prompt (Face ID's or the passcode's cancel).
         public static let cancelled = Code(rawValue: MobileCodeCancelled)
         /// No key, credential, deferred credential or authorization in progress
         /// with that ID.
@@ -101,7 +104,14 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
     /// as `issuerRoots` or `redirectURI` to receive credentials, or
     /// `verifierRoots` to present them — rather than an argument being
     /// malformed: the app's configuration to fix, which `message` names
-    /// by its JSON key (`issuer_roots`).
+    /// by its JSON key (`issuer_roots`). For ``Code/platform`` it's the
+    /// Wallet Provider's error code when the provider refused
+    /// (``WalletProviderRefusedError``): `instance_not_active` (the
+    /// installation is suspended), `instance_revoked`,
+    /// `invalid_signed_request`, and so on. For ``Code/unavailable`` it's
+    /// `refresh_in_progress` (`MobileDetailRefreshInProgress`) when
+    /// another process sharing the ``CredentialStore`` is refreshing with
+    /// the same refresh grant: try again later.
     public let protocolError: String?
     /// Detail for logs: at most 300 characters, with no personal data, no
     /// remote party's own description, and no URL's path or query.
@@ -168,6 +178,11 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
         case .protocolError: "The service refused the request."
         case .documentNotValid where protocolError == "suspended": "This document is suspended."
         case .documentNotValid: "This document has been revoked or can't be confirmed as valid."
+        case .tlsPin: "The service's identity couldn't be confirmed, so nothing was sent to it."
+        case .platform where protocolError == "instance_not_active": "This wallet is suspended by its provider. Contact them, or try again later."
+        case .platform where protocolError == "instance_revoked": "This wallet's registration with its provider was withdrawn. Try again to register it anew."
+        case .platform where protocolError == "invalid_signed_request": "The wallet's provider couldn't verify this device's request. Check the date and time, then try again."
+        case .platform where protocolError != nil: "The wallet's provider refused the request."
         case .platform: "The wallet couldn't use its keys or storage."
         case .invalidInput where protocolError == MobileDetailNotConfigured: "This wallet isn't set up for that."
         case .invalidInput: "That link or code isn't valid."
@@ -236,9 +251,17 @@ public enum OID4VC {
     /// configuration with `development` set, which it otherwise refuses
     /// (`invalidInput`): `development` relaxes what production requires,
     /// so a staging configuration shipped by mistake must not take
-    /// effect. A debug build (`DEBUG`), or one on the test framework,
-    /// needs no call. Call it only for an internal build that must run a
-    /// development configuration.
+    /// effect. A debug build (the package compiled with `DEBUG`, as
+    /// Xcode's Debug configuration compiles it), or one on the test
+    /// framework, needs no call. Call it only for an internal build that
+    /// must run a development configuration.
+    ///
+    /// It lasts for this process only. An app extension — a document
+    /// provider, say — runs in a process of its own: an internal release
+    /// build of it calls this itself, before making its `Wallet`.
+    /// (OID4VCWallet for Android has no debug-build exemption: there,
+    /// every build with `development` set calls
+    /// `OID4VC.allowDevelopment()`.)
     public static func allowDevelopmentInRelease() {
         developmentInRelease.withLock { $0 = true }
     }

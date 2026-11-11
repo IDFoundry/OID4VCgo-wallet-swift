@@ -145,7 +145,11 @@ along with its Wallet Attestations (the Wallet Provider protocol's
   build refuses it, and ``ProximityReaderConfiguration/development``,
   with `invalidInput`, unless the app called
   ``OID4VC/allowDevelopmentInRelease()``: a staging configuration
-  shipped by mistake fails instead of relaxing production's checks.
+  shipped by mistake fails instead of relaxing production's checks. A
+  debug build (`DEBUG`) allows it without the call, which Android's
+  library doesn't: there every build calls `OID4VC.allowDevelopment()`.
+  The call lasts for its process only: an internal release build's
+  document provider extension, in its own process, makes it too.
 - To pin your services' certificates, set
   ``WalletConfiguration/tlsPins``: host → base64 SHA-256 digests of a
   certificate's SubjectPublicKeyInfo. Pin a CA's key, so a leaf renewal
@@ -334,9 +338,12 @@ ecosystem, and record why:
   can't be made, and on macOS. The directory shows whoever can read it
   which status lists the wallet checks (their URIs, so the issuers of
   its credentials, not which entries), the lists, and when each was
-  last checked; under complete protection, a background check while the
-  device is locked can't read or keep lists there, and downloads them
-  instead. Set a directory of the app's own to keep them elsewhere,
+  last checked. While the device is locked, complete protection keeps
+  a background check from reading lists there, and
+  ``FileCredentialStore``'s default complete protection keeps it from
+  reading the credential: the check fails as
+  ``WalletError/Code/platform``. Schedule status checks for when the app
+  comes to the foreground. Set a directory of the app's own to keep them elsewhere,
   with the protection you give it (a failure to get its key, or to make
   it, then fails the wallet), or `""` to keep them in memory only.
 - ``WalletConfiguration/mdocIssuerRoots`` and
