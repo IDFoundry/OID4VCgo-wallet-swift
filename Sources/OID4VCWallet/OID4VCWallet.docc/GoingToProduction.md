@@ -359,10 +359,22 @@ ecosystem, and record why:
   needs a key store that is also a ``KeyAgreement``.
   ``WalletConfiguration/ProximityDeviceAuth/signature``, the default,
   signs.
-- ``WalletConfiguration/proofKeyByIndex``: names a key-attested jwt
-  proof's key by its index in the key attestation (`kid` `"0"`) instead
-  of in `jwk`, as issuers following ETSI TS 119 472-3 require; an
-  issuer taking only `jwk` refuses it. Set it only for such issuers.
+- ``WalletConfiguration/proofKeyByJWK``: names a key-attested jwt
+  proof's key in `jwk` instead of by its index in the key attestation
+  (`kid` `"0"`), the default, which issuers following ETSI TS 119 472-3
+  require and refuse `jwk` in place of. Set it only for an issuer that
+  takes no index. ``WalletConfiguration/proofKeyByIndex``, which named
+  the key by its index before that was the default, has no effect.
+- ``WalletConfiguration/acceptX509SANDNS``: also answers Verifiers
+  identified by the `x509_san_dns` client ID prefix, as some
+  deployments' Verifiers are, besides the `x509_hash` HAIP has Verifiers
+  use. The client ID's DNS name must be in the signing certificate,
+  which must chain to ``WalletConfiguration/verifierRoots``, and be the
+  host of the request's response URI. Every name in a certificate under
+  ``WalletConfiguration/verifierRoots`` is then a Verifier the wallet
+  answers: set it only where those roots certify Verifiers alone, or
+  with ``WalletConfiguration/verifierRequireEKU``. It needs
+  ``WalletConfiguration/verifierRoots``.
 - ``WalletConfiguration/acceptMDLSignerWithoutEKU`` and
   ``ProximityReaderConfiguration/acceptMDLSignerWithoutEKU``: also
   accept a document signer certificate with no extended key usage,
