@@ -277,6 +277,8 @@ public final class ProximityPresentation: @unchecked Sendable {
     private let timeouts: ProximityTimeouts
     private let broadcast = StateBroadcast<State>(.waitingForReader)
     private var task: Task<Void, Never>?
+    /// Set once the transport is closed, after the final state.
+    private let closed = Signal()
 
     /// The QR code to show: "mdoc:" and the device engagement.
     public let qrCode: String
@@ -324,7 +326,16 @@ public final class ProximityPresentation: @unchecked Sendable {
             try await within(timeouts.connectSeconds, "no reader connected") { try await self.transport.connect() }
             broadcast.update(.connected) { if case .waitingForReader = $0 { true } else { false } }
             let first = try await within(timeouts.requestSeconds, "the reader sent no request") { try await self.transport.receive() }
-            guard try await handleMessage(first) == "request" else { return }
+            // An "ended" event has finished the session; any other ("none")
+            // carried no request, so nothing would ever end it.
+            let event = try await handleMessage(first)
+            guard event == "request" else {
+                if event != "ended" {
+                    await sendTermination()
+                    finish(.failed(WalletError(text: "[protocol] the reader's first message carried no request")))
+                }
+                return
+            }
             let request = try decode(RequestJSON.self, handle.request()).request
             guard broadcast.update(.requestReceived(request), if: { if case .connected = $0 { true } else { false } }) else { return }
             // The holder decides; meanwhile the reader can only end the
@@ -458,7 +469,8 @@ public final class ProximityPresentation: @unchecked Sendable {
         finish(.declined)
     }
 
-    /// Ends the session now, from any state.
+    /// Ends the session now, from any state. It returns at once: to know
+    /// the session has let go of Bluetooth, wait on ``awaitClosed()``.
     public func cancel() {
         guard !state.isFinal else { return }
         ending.withLock { $0 = .cancelled }
@@ -492,13 +504,29 @@ public final class ProximityPresentation: @unchecked Sendable {
         }
         guard broadcast.update(final, if: { !$0.isFinal }) else { return }
         let transport = self.transport
+        let closed = self.closed
         Task.detached {
             if letReaderEnd {
                 // Until the reader disconnects or ends: receive throws then.
-                _ = try? await withTimeout(5) { while true { _ = try await transport.receive() } }
+                _ = try? await withTimeout(Self.readerEndSeconds) { while true { _ = try await transport.receive() } }
             }
             transport.close()
+            closed.signal()
         }
+    }
+
+    /// How long, after the response is sent, the session waits for the
+    /// reader to end before closing the transport itself.
+    static let readerEndSeconds: TimeInterval = 5
+
+    /// Waits until the session is over and has closed its Bluetooth
+    /// transport, on every path: after `.presented`, that is once the
+    /// reader disconnects, or 5 seconds later. The state is
+    /// final before then. Wait on it before starting the next session,
+    /// so two never hold Bluetooth at once. A cancelled wait throws
+    /// `CancellationError`; the session goes on closing.
+    public func awaitClosed() async throws {
+        try await closed.wait()
     }
 
     private func within<T: Sendable>(_ timeout: TimeInterval, _ what: String, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
