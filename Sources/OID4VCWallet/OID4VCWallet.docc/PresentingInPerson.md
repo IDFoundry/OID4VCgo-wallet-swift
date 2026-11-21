@@ -148,7 +148,11 @@ nothing is sent and the request stands.
 ``ProximityPresentation/cancel()`` ends a session at any point, as the
 holder leaves the screen, say. ``ProximityTimeouts`` sets how long it
 waits: by default 60 seconds for a reader to connect, 30 for its
-request, and 300 for the holder to decide. Give them as `TimeInterval`
+request, and 300 for the holder to decide. Any device in Bluetooth
+range can start a session with the holder, without the QR code, and
+the 30 seconds run from the first that does, not necessarily the
+reader: from then on the reader has that long to send its request.
+Give them as `TimeInterval`
 seconds, on iOS 15 and later
 (``ProximityTimeouts/init(connectSeconds:requestSeconds:idleSeconds:)``),
 or as `Duration`s, on iOS 16 and later
@@ -229,6 +233,21 @@ and the IACA it chains to, and its validity. Decide which issuers to
 accept on ``VerifiedMdoc/issuerChain``, the verified certificate path:
 ``VerifiedMdoc/issuer`` and ``VerifiedMdoc/trustAnchor`` are names any
 document signer under a trusted IACA can choose, for display.
+
+When the holder offers only mdoc peripheral server mode
+(``ProximityReaderSession/mode``), the reader connects to whichever
+device advertises the holder's Bluetooth service, which any device can
+copy from the holder's adverts. A device whose answer isn't the
+holder's (it doesn't decrypt, or is a bare decline, which isn't
+authenticated), or that drops the link before answering, is passed
+over, and the same request goes to the next one, within
+``ProximityTimeouts/connectSeconds``. So a holder's decline is reported
+as `.declined` once no other device advertises the holder's service
+for 5 seconds: a holder that hasn't connected goes on advertising, so
+another device's decline can't end the search. While other devices
+advertise it, a decline can take until
+``ProximityTimeouts/connectSeconds`` ends: up to 60 seconds after the
+QR code was scanned, by default.
 
 With `statusCheck: .check`, the session checks the document's
 revocation status before it's `.verified`, as

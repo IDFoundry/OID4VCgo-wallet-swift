@@ -155,8 +155,13 @@ along with its Wallet Attestations (the Wallet Provider protocol's
   certificate's SubjectPublicKeyInfo. Pin a CA's key, so a leaf renewal
   doesn't break the app, and keep a backup pin: a wrong set locks the
   wallet out of that host until an update. Pins cover the SDK's own
-  requests, which `NSPinnedDomains` doesn't reach, not your app's, such
-  as to your Wallet Provider: pin that `URLSession` yourself.
+  requests, which `NSPinnedDomains` doesn't reach, not your app's.
+  ``HttpWalletProvider``'s requests to your Wallet Provider are made with
+  a `URLSession` of its own, which `tlsPins` doesn't reach and which
+  takes no session of yours: pin your provider's host with
+  `NSPinnedDomains` under `NSAppTransportSecurity` in your app's
+  Info.plist, which every `URLSession` in the app follows, with a backup
+  pin.
 - Outside `development` the SDK's requests reach public addresses only.
   If your issuers, Verifiers, status lists or CRL distribution points
   are inside your own network (an enterprise's, or a test
@@ -299,6 +304,36 @@ off for the app: the foreground refresh is what keeps an app in use
 current. A list that does pass its nextUpdate unrefreshed fails its
 role's checks closed until a fresh one arrives.
 
+### Issuers whose offers you take
+
+A pre-authorized offer's PIN goes to the issuer the offer names, before
+the wallet has seen anything that issuer signs:
+``WalletConfiguration/IssuerTrust/roots`` judge it only when its
+credential arrives. A phishing offer naming an attacker's issuer, sent
+beside a genuine service's PIN, would hand the attacker that PIN
+(OpenID4VCI 1.0's Security Considerations, "Transaction Code
+Phishing"). So a wallet that receives credentials decides which
+issuers' offers it takes, or `Wallet(configuration:)` throws
+``WalletError/Code/invalidInput``:
+
+- ``WalletConfiguration/IssuerTrust/credentialIssuers`` lists them:
+  ``Wallet/startIssuance(offer:)`` refuses any other issuer's offer with
+  ``WalletError/Code/untrustedIssuer`` before asking for the PIN. Use
+  it where your issuers are known.
+- Signed issuer metadata naming its issuer:
+  ``WalletConfiguration/IssuerMetadataTrust/roots`` with
+  ``WalletConfiguration/IssuerMetadataTrust/requireSigned`` and
+  ``WalletConfiguration/IssuerMetadataTrust/requireName``, all three,
+  takes only issuers whose metadata a certificate under those roots
+  signs and names them in: the way that scales to an ecosystem whose
+  issuers aren't known in advance. It may be combined with the list.
+- ``WalletConfiguration/IssuerTrust/allowAnyCredentialIssuer`` takes
+  any issuer's offer, and leaves this phishing to your app.
+
+Either way, lead the PIN prompt with the offer's
+``Offer/credentialIssuer``, not its issuer name alone: unsigned
+metadata lets an issuer choose its name.
+
 ### Settings to decide
 
 Each of these is off or open by default. Decide each for your
@@ -322,7 +357,9 @@ ecosystem, and record why:
 - ``WalletConfiguration/IssuerTrust/requireIssuerName``: refuses an SD-JWT VC whose
   `iss` its signing certificate doesn't name. Set it where
   ``WalletConfiguration/IssuerTrust/roots`` certify several issuers, so one
-  can't issue in another's name.
+  can't issue in another's name. That holds only where none of their
+  CAs can certify another's name: an `https` `iss` is confined by URI
+  name constraints, not by DNS ones.
 - ``WalletConfiguration/IssuerTrust/allowForeignIss``: receives an SD-JWT VC whose
   `iss` isn't the issuer it came from. Leave it off unless an issuer
   names itself differently, and ``WalletConfiguration/IssuerTrust/roots``
@@ -407,7 +444,9 @@ ecosystem, and record why:
   snapshot shows no claims or portraits.
 - Fetch an issuer's ``Logo`` once, when the holder accepts the
   credential, and keep it: loading it on the offer's preview tells
-  whoever serves it that the offer was opened.
+  whoever serves it that the offer was opened. Fetch it through a
+  session that refuses to connect to a loopback, private or link-local
+  address: the library judges its host by name only.
 - The package and `Mobile.framework` each ship a privacy manifest,
   which Xcode merges into the app's privacy report. Each declares the
   required-reason APIs the library calls: system boot time (35F9.1,

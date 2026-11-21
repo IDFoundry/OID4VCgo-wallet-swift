@@ -99,12 +99,36 @@ public struct WalletConfiguration: Codable, Sendable {
         /// `roots` naming it. Without it, `checkStatus` accepts only a
         /// status list the issuer signed itself.
         public var statusIssuers: [String: [String]]
+        /// The only Credential Issuer Identifiers the wallet takes offers
+        /// from, each compared exactly with the offer's
+        /// `credentialIssuer`: `startIssuance` refuses another's offer with
+        /// ``WalletError/Code/untrustedIssuer`` before fetching its
+        /// metadata, so the holder is never asked for a transaction code
+        /// it would send there. Resuming, refreshing and polling a
+        /// deferred credential refuse an issuer the list no longer names
+        /// the same way, keeping what the wallet holds from it.
+        ///
+        /// A wallet with `roots` (or the mdoc ones) must decide which
+        /// issuers' offers it takes, or `Wallet(configuration:)` throws
+        /// `invalidInput`: this list; signed issuer metadata naming its
+        /// issuer (``IssuerMetadataTrust`` with `roots`, `requireSigned`
+        /// and `requireName`), which may be combined with it; or
+        /// `allowAnyCredentialIssuer`, alone.
+        public var credentialIssuers: [String]
+        /// Takes offers from any issuer, in place of `credentialIssuers` or
+        /// signed and named issuer metadata. A transaction code the holder
+        /// enters then reaches whichever issuer an offer names, so an
+        /// attacker's offer sent beside a genuine service's PIN phishes
+        /// it: guarding against that is the app's. Set it only for a
+        /// wallet whose issuers can't be told apart in advance.
+        public var allowAnyCredentialIssuer: Bool
 
         /// Issuer trust: every field has a default.
         public init(roots: String = "", requireEKU: String = "", mdocRoots: String = "",
                     mdocRootsByDocType: [String: String] = [:], mdocRequireEKU: String = "",
                     acceptMDLSignerWithoutEKU: Bool = false, requireIssuerName: Bool = false,
-                    allowForeignIss: Bool = false, statusIssuers: [String: [String]] = [:]) {
+                    allowForeignIss: Bool = false, statusIssuers: [String: [String]] = [:],
+                    credentialIssuers: [String] = [], allowAnyCredentialIssuer: Bool = false) {
             self.roots = roots
             self.requireEKU = requireEKU
             self.mdocRoots = mdocRoots
@@ -114,6 +138,8 @@ public struct WalletConfiguration: Codable, Sendable {
             self.requireIssuerName = requireIssuerName
             self.allowForeignIss = allowForeignIss
             self.statusIssuers = statusIssuers
+            self.credentialIssuers = credentialIssuers
+            self.allowAnyCredentialIssuer = allowAnyCredentialIssuer
         }
     }
 
@@ -390,7 +416,8 @@ public struct WalletConfiguration: Codable, Sendable {
         case statusIssuers = "status_issuers", requireIssuerName = "require_issuer_name"
         case issuerMetadataRoots = "issuer_metadata_roots", requireSignedIssuerMetadata = "require_signed_issuer_metadata"
         case requireIssuerMetadataName = "require_issuer_metadata_name", maxIssuerMetadataAgeSeconds = "max_issuer_metadata_age_seconds"
-        case allowForeignIss = "allow_foreign_iss"
+        case allowForeignIss = "allow_foreign_iss", credentialIssuers = "credential_issuers"
+        case allowAnyCredentialIssuer = "allow_any_credential_issuer"
         case mdocIssuerRoots = "mdoc_issuer_roots", mdocIssuerRootsByDocType = "mdoc_issuer_roots_by_doctype"
         case mdocIssuerRequireEKU = "mdoc_issuer_require_eku", acceptMDLSignerWithoutEKU = "accept_mdl_signer_without_eku"
         case crls, revocation, crlIssuers = "crl_issuers", noRevocationCheck = "no_revocation_check"
@@ -425,7 +452,9 @@ public struct WalletConfiguration: Codable, Sendable {
                 acceptMDLSignerWithoutEKU: try value(.acceptMDLSignerWithoutEKU, false),
                 requireIssuerName: try value(.requireIssuerName, false),
                 allowForeignIss: try value(.allowForeignIss, false),
-                statusIssuers: try value(.statusIssuers, [:])),
+                statusIssuers: try value(.statusIssuers, [:]),
+                credentialIssuers: try value(.credentialIssuers, []),
+                allowAnyCredentialIssuer: try value(.allowAnyCredentialIssuer, false)),
             issuerMetadata: IssuerMetadataTrust(
                 roots: try value(.issuerMetadataRoots, ""),
                 requireEKU: try value(.issuerMetadataRequireEKU, ""),
@@ -474,6 +503,8 @@ public struct WalletConfiguration: Codable, Sendable {
         try c.encode(issuers.requireIssuerName, forKey: .requireIssuerName)
         try c.encode(issuers.allowForeignIss, forKey: .allowForeignIss)
         try c.encode(issuers.statusIssuers, forKey: .statusIssuers)
+        try c.encode(issuers.credentialIssuers, forKey: .credentialIssuers)
+        try c.encode(issuers.allowAnyCredentialIssuer, forKey: .allowAnyCredentialIssuer)
         try c.encode(issuerMetadata.roots, forKey: .issuerMetadataRoots)
         try c.encode(issuerMetadata.requireEKU, forKey: .issuerMetadataRequireEKU)
         try c.encode(issuerMetadata.requireSigned, forKey: .requireSignedIssuerMetadata)
@@ -509,15 +540,18 @@ public struct WalletConfiguration: Codable, Sendable {
 
 /// An image the issuer names for display: an https URL or a data: image
 /// (nothing else reaches the app, nor an https URL naming an IP address or
-/// localhost), with alternative text. Loading the URL tells whoever serves
-/// it that the holder is looking: fetch it once, when the holder accepts
-/// the credential rather than on the offer's preview, and keep it.
+/// a local name), with alternative text. Its host is judged by its name,
+/// and a public name can resolve to a private address: load the URL
+/// through a session that refuses to connect to a loopback, private or
+/// link-local address. Loading the URL tells whoever serves it that the
+/// holder is looking: fetch it once, when the holder accepts the
+/// credential rather than on the offer's preview, and keep it.
 public struct Logo: Decodable, Equatable, Sendable {
     /// The image: an https URL or a `data:` URL.
     public let uri: String
     /// Text describing the image, for accessibility.
     public let altText: String?
-    /// `uri` as a URL, for `AsyncImage`.
+    /// `uri` as a URL, to load as ``Logo`` says.
     public var url: URL? { URL(string: uri) }
     enum CodingKeys: String, CodingKey { case uri, altText = "alt_text" }
 }
@@ -999,17 +1033,31 @@ public final class Wallet: @unchecked Sendable {
     }
 
     /// Fetches and verifies an OpenID4VP request (openid4vp://…), and
-    /// finds the credentials that can answer it.
+    /// finds the credentials that can answer it. A request the wallet
+    /// refuses throws ``WalletError/Code/requestRefused``,
+    /// whose ``WalletError/refusalRedirect`` is where the Verifier asked
+    /// to take the holder.
     public func startPresentation(request: String) async throws -> Presentation {
         let wallet = handle
-        let p = try await OID4VC.cancellable { op in try OID4VC.wrap { try wallet.startPresentation(op, requestLink: request) } }
+        let p = try await OID4VC.cancellable { op in
+            do {
+                return try OID4VC.wrap { try wallet.startPresentation(op, requestLink: request) }
+            } catch var e as WalletError where e.code == .requestRefused {
+                // This call's own, not the latest of any call's.
+                e.refusalRedirect = URL(string: op.takeRefusalRedirect())
+                throw e
+            }
+        }
         return try Presentation(p)
     }
 
     /// Where the Verifier asked to take the holder after the wallet
     /// refused its request: when `startPresentation` throws
     /// `requestRefused`, open this URL, if any, as OpenID4VP §8.2 has a
-    /// wallet do. It's returned once.
+    /// wallet do. It's returned once. It holds the latest refusal of
+    /// any call: with presentations started concurrently, open the
+    /// error's own ``WalletError/refusalRedirect`` instead, or one
+    /// Verifier's redirect may be opened for another's refusal.
     public func takeRefusalRedirect() -> URL? {
         URL(string: handle.takeRefusalRedirect())
     }

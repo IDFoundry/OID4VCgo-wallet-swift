@@ -15,9 +15,17 @@ extension MobileProximityReaderSession: @retroactive @unchecked Sendable {}
 /// and later, `Duration` properties and an initializer do the same.
 public struct ProximityTimeouts: Sendable {
     /// Seconds to wait for the other device to connect, after the QR code
-    /// is shown or scanned.
+    /// is shown or scanned. A reader in mdoc peripheral server mode
+    /// connects to whichever device advertises the holder's service, so
+    /// within these seconds it also passes over devices whose answers
+    /// aren't the holder's and sends its request to the next: a bare
+    /// "declined", which isn't authenticated, is reported once no other
+    /// device advertises the holder's service for 5 seconds, or these end.
     public var connectSeconds: TimeInterval
-    /// Seconds to wait for the reader's request, once connected.
+    /// Seconds to wait for the reader's request, once connected. As the
+    /// holder's GATT server, connected is when any device first starts a
+    /// session (State 0x01), not necessarily the reader: the reader's
+    /// whole window may be this, not `connectSeconds` and this.
     public var requestSeconds: TimeInterval
     /// Seconds to wait for the holder to decide, or the holder's answer to
     /// arrive.
@@ -372,10 +380,9 @@ public final class ProximityPresentation: @unchecked Sendable {
         do {
             try await within(timeouts.connectSeconds, "no reader connected") { try await self.transport.connect() }
             broadcast.update(.connected) { if case .waitingForReader = $0 { true } else { false } }
-            let first = try await within(timeouts.requestSeconds, "the reader sent no request") { try await self.transport.receive() }
+            let event = try await within(timeouts.requestSeconds, "the reader sent no request") { try await self.firstEvent() }
             // An "ended" event has finished the session; any other ("none")
             // carried no request, so nothing would ever end it.
-            let event = try await handleMessage(first)
             guard event == "request" else {
                 if event != "ended" {
                     await sendTermination()
@@ -413,12 +420,27 @@ public final class ProximityPresentation: @unchecked Sendable {
         }
     }
 
+    /// The event for the first message Go accepts. Any device in range
+    /// can write to a GATT server first: one whose message Go rejects
+    /// (it never saw the QR code) is dropped, and the next first message,
+    /// from any device, is handed to Go.
+    private func firstEvent() async throws -> String {
+        while true {
+            let event = try await handleMessage(try await transport.receive())
+            guard event == "rejected" else { return event }
+            transport.reject()
+        }
+    }
+
     /// Hands `message` to Go, sends its reply, and ends the session on an
-    /// "ended" event; returns the event.
+    /// "ended" event; returns the event. Any event but "rejected" commits
+    /// the transport to the device that sent `message`.
     private func handleMessage(_ message: Data) async throws -> String {
         let p = handle
         let json = try await OID4VC.cancellable { op in p.handleMessage(op, message: message) }
         let event = try decode(EventJSON.self, json)
+        if event.event == "rejected" { return event.event }
+        transport.commit()
         if let send = event.send { try await transport.send(send) }
         if event.event == "ended" {
             finish(event.reason == "reader_ended" ? .readerEnded : .failed(WalletError(text: event.error ?? "[protocol] the session failed")))
@@ -1022,6 +1044,11 @@ struct ReaderEngagement: Decodable {
 
 /// One reader session: follow `states` to `.verified` or another final state.
 public final class ProximityReaderSession: @unchecked Sendable {
+    /// How long a reader passing over a device waits for another to
+    /// advertise the holder's service UUID: a holder advertises
+    /// continuously, many times a second, until a reader connects.
+    static let passOverFindSeconds: TimeInterval = 5
+
     /// Where the session is: follow `states`.
     public enum State: Sendable {
         /// Looking for the holder's device, or waiting for it to connect.
@@ -1093,11 +1120,17 @@ public final class ProximityReaderSession: @unchecked Sendable {
 
     private func run() async {
         do {
+            // The time to find the holder's device: to connect, and to pass
+            // over devices whose answers aren't the holder's (`exchange`).
+            let deadline = ProcessInfo.processInfo.systemUptime + max(timeouts.connectSeconds, 0)
             do {
                 try await withTimeout(timeouts.connectSeconds) { try await self.transport.connect() }
             } catch is ProximityTimeout {
                 throw ProximityError(.timedOut, "the holder's device wasn't found")
             }
+            // The reader speaks first: as GATT server (central client
+            // mode), to the first device that started the session.
+            transport.commit()
             let s = handle
             let json: String
             if documentRequests.count == 1 {
@@ -1108,15 +1141,7 @@ public final class ProximityReaderSession: @unchecked Sendable {
                 let requestsJSON = String(decoding: try JSONEncoder().encode(documentRequests), as: UTF8.self)
                 json = try await OID4VC.offMain { try OID4VC.call { s.requestDocuments(requestsJSON, error: $0) } }
             }
-            try await transport.send(try decode(SendJSON.self, json).send)
-            broadcast.update(.waitingForResponse) { if case .connecting = $0 { true } else { false } }
-            let answer: Data
-            do {
-                answer = try await withTimeout(timeouts.idleSeconds) { try await self.transport.receive() }
-            } catch is ProximityTimeout {
-                throw ProximityError(.timedOut, "the holder didn't respond in time")
-            }
-            let event = try decode(ReaderEventJSON.self, handle.handleMessage(answer))
+            let event = try await exchange(try decode(SendJSON.self, json).send, deadline: deadline)
             if let send = event.send { try? await transport.send(send) }
             if event.event == "verified", let v = event.verified {
                 finish(await settled((event.documents ?? [v]).map(\.mdoc)))
@@ -1137,6 +1162,66 @@ public final class ProximityReaderSession: @unchecked Sendable {
             finish(.failed(e))
         } catch {
             finish(.failed(WalletError(code: .internalError, message: "\(error)")))
+        }
+    }
+
+    /// Sends `establishment` and returns Go's event for the answer. In
+    /// mdoc peripheral server mode the reader connects to whichever device
+    /// advertises the holder's service UUID, which the holder's adverts
+    /// carry in the clear, so the device answering needn't be the holder:
+    /// one whose answer Go rejects (`TryHandleMessage`: it doesn't decrypt,
+    /// or is a bare status, which isn't encrypted), or whose link is lost
+    /// before it answers, is passed over, and the same request goes to the
+    /// next device advertising the UUID, until `deadline`. The holder takes
+    /// it once. Passing over, the reader waits `passOverFindSeconds` for
+    /// another device to advertise the UUID, not the whole time left: a
+    /// holder that hasn't connected still advertises, so when none does,
+    /// the holder has gone, having declined. An impostor can't hurry it
+    /// so: the holder it got ahead of goes on advertising. When no other
+    /// device is found, the outcome is the last rejected answer, a
+    /// "rejected" event, whose reason the caller reports as an "ended"
+    /// one's, or, with none, the lost link.
+    private func exchange(_ establishment: Data, deadline: TimeInterval) async throws -> ReaderEventJSON {
+        let passesOver = mode == .peripheralServer
+        var rejected: ReaderEventJSON?
+        while true {
+            let answer: Data
+            do {
+                try await transport.send(establishment)
+                broadcast.update(.waitingForResponse) { if case .connecting = $0 { true } else { false } }
+                answer = try await withTimeout(timeouts.idleSeconds) { try await self.transport.receive() }
+            } catch is ProximityTimeout {
+                throw ProximityError(.timedOut, "the holder didn't respond in time")
+            } catch let e as ProximityTransportError where passesOver && !e.bluetoothUnavailable {
+                if try await passOver(deadline: deadline) { continue }
+                if let rejected { return rejected }
+                throw e
+            }
+            let s = handle
+            let json = passesOver ? s.tryHandleMessage(answer) : s.handleMessage(answer)
+            let event = try decode(ReaderEventJSON.self, json)
+            guard event.event == "rejected" else { return event }
+            rejected = event
+            guard try await passOver(deadline: deadline) else { return event }
+        }
+    }
+
+    /// Passes over the device that answered, or lost its link, and
+    /// connects to the next one advertising the holder's service UUID
+    /// before `deadline`: true once connected, false when none is found
+    /// within `passOverFindSeconds`, or in time.
+    private func passOver(deadline: TimeInterval) async throws -> Bool {
+        if cancelling.withLock({ $0 }) { throw CancellationError() }
+        transport.reject()
+        let left = deadline - ProcessInfo.processInfo.systemUptime
+        guard left > 0 else { return false }
+        do {
+            try await withTimeout(left) { try await self.transport.connect(findWithin: Self.passOverFindSeconds) }
+            return true
+        } catch let e as ProximityTransportError where e.bluetoothUnavailable {
+            throw e
+        } catch is ProximityTimeout, is ProximityTransportError {
+            return false
         }
     }
 

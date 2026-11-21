@@ -59,6 +59,14 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
         /// The Verifier's request is signed with a certificate that
         /// doesn't chain to `verifiers.roots`: it's refused unread.
         public static let untrustedVerifier = Code(rawValue: MobileCodeUntrustedVerifier)
+        /// The offer names a Credential Issuer outside
+        /// `issuers.credentialIssuers`: it's refused before fetching its
+        /// metadata. Also an issuer whose metadata isn't signed, or is
+        /// signed naming another issuer, under `issuerMetadata`'s
+        /// `requireSigned` and `requireName`; and resuming, refreshing
+        /// or polling a deferred credential from an issuer the list no
+        /// longer names, which keeps what the wallet holds from it.
+        public static let untrustedIssuer = Code(rawValue: MobileCodeUntrustedIssuer)
         /// A pinned host's certificate matched none of its `network.tlsPins`: an
         /// interception, or a server whose keys changed beyond its pins.
         /// Nothing was sent to it.
@@ -117,6 +125,16 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
     /// remote party's own description, and no URL's path or query.
     public let message: String
 
+    /// Where the Verifier asked to take the holder after the wallet
+    /// refused its request: for a ``WalletError/Code/requestRefused``
+    /// from ``Wallet/startPresentation(request:)``, the `redirect_uri` it
+    /// answered the wallet's error with, nil for none. Open it, as
+    /// OpenID4VP §8.2 has a wallet do for a same-device request. It's
+    /// this call's own, so presentations started concurrently each get
+    /// their Verifier's, unlike ``Wallet/takeRefusalRedirect()``. Never in
+    /// ``message`` or ``description``. From OID4VCWallet 0.41.0.
+    public internal(set) var refusalRedirect: URL?
+
     /// Whether a certificate revocation check caused this: a certificate
     /// in a chain checked under `revocation.roles` is on its CA's revocation
     /// list — a credential's issuer on receipt, a Verifier's or reader's
@@ -172,6 +190,7 @@ public struct WalletError: Error, Equatable, CustomStringConvertible, LocalizedE
         case .reissueRequired: "This credential can't be refreshed. Receive it again from the issuer."
         case .deliveryUnknown: "Your response may not have reached the verifier. Check with them before sharing again."
         case .untrustedVerifier: "This verifier isn't one your wallet trusts, so its request wasn't opened."
+        case .untrustedIssuer: "This issuer isn't one your wallet takes credentials from."
         case .requestRefused: "This verifier's request asks for something this wallet doesn't support, so it was refused."
         case .profileViolation, .clientAuthUnsupported, .proofUnsupported: "This wallet can't receive credentials from this issuer."
         case .protocolError where protocolError == "invalid_grant": "That code or PIN wasn't accepted."
@@ -240,7 +259,7 @@ public enum OID4VC {
     /// isn't made on a framework of another — a stale build, or the Go
     /// side changed without these sources — rather than misreading its
     /// JSON. The Go tests keep it equal to the mobile package's.
-    public static let expectedABIVersion = 15
+    public static let expectedABIVersion = 16
 
     /// Whether the linked framework is the test build, carrying an
     /// in-process test issuer and Verifier (`-tags mobiletest`): an app
