@@ -29,7 +29,7 @@ storage and the UI:
 ## Install
 
 ```swift
-.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.43.0")
+.package(url: "https://github.com/IDFoundry/OID4VCgo-wallet-swift", from: "0.44.0")
 ```
 
 Then, in your app's Info.plist and capabilities:
@@ -130,9 +130,9 @@ Kotlin library of the same version comes from the same commit.
 
 ## Documentation
 
-- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.43.0/documentation/oid4vcwallet/): getting started, an article
+- [The OID4VCWallet documentation](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.44.0/documentation/oid4vcwallet/): getting started, an article
   for each task, and the API reference.
-- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.43.0/documentation/oid4vcwallet/integrationchecklist): every step
+- [The integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.44.0/documentation/oid4vcwallet/integrationchecklist): every step
   and rule in order, each with how to check it.
 - What's new: each [release](https://github.com/IDFoundry/OID4VCgo-wallet-swift/releases)'s notes.
 - [OID4VCgo's `mobile/`](https://github.com/IDFoundry/OID4VCgo/tree/main/mobile):
@@ -146,7 +146,7 @@ Kotlin library of the same version comes from the same commit.
 ## For coding assistants
 
 Integrating this package for someone? Follow
-[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.43.0/documentation/oid4vcwallet/integrationchecklist), and read the
+[the integration checklist](https://idfoundry.github.io/OID4VCgo-wallet-swift/0.44.0/documentation/oid4vcwallet/integrationchecklist), and read the
 documentation's Getting started article, then the article for each
 feature, before writing code. Use only the public API those name: never the `Mobile` framework's
 generated types directly, and don't reimplement the protocols or the
